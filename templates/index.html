@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Manager — Adobe-inspired PDF Toolkit</title>
+  <meta name="description" content="Convert, organize, edit, secure and OCR your PDFs.">
+  <!-- Static assets served from Flask /static -->
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23e34234'/><text x='50' y='68' font-size='52' font-family='Arial' font-weight='bold' fill='white' text-anchor='middle'>P</text></svg>">
+</head>
+<body>
+  <!-- ============================ Top bar ============================ -->
+  <header class="topbar">
+    <button class="icon-btn menu-toggle" id="menuToggle" aria-label="Toggle menu">☰</button>
+    <div class="brand">
+      <span class="logo">P</span>
+      <span>PDF Manager <span class="sub">· Acrobat-inspired toolkit</span></span>
+    </div>
+    <span class="spacer"></span>
+    <nav class="topbar-links">
+      <a href="#" onclick="return false">Tools</a>
+      <a href="/health" target="_blank" rel="noopener">Status</a>
+      <a href="#" onclick="return false">Help</a>
+    </nav>
+    <button class="icon-btn" id="themeToggle" aria-label="Toggle dark mode" title="Toggle theme">☽</button>
+  </header>
+
+  <!-- ============================ Shell ============================== -->
+  <div class="shell">
+    <aside class="sidebar">
+      <nav id="sidebarNav"><!-- tool categories injected by app.js --></nav>
+    </aside>
+    <div class="backdrop"></div>
+
+    <main class="workspace" id="workspace">
+      <!-- active tool UI injected by app.js -->
+    </main>
+  </div>
+
+  <!-- Scripts loaded in dependency order: api -> ui -> app -->
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/ui.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

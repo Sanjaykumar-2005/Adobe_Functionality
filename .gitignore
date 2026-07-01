@@ -1,0 +1,47 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---- Virtual environments ----
+venv/
+.venv/
+env/
+.env
+ENV/
+
+# ---- Secrets / local config ----
+*.env
+.env.*
+!.env.example
+
+# ---- Runtime file storage (auto-created, transient) ----
+outputs/
+temp/
+
+# ---- Generated demo / sample artifacts ----
+demo_output/
+sample_files/
+
+# ---- Test / coverage ----
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ---- IDE / editor ----
+.vscode/
+.idea/
+*.swp
+*~
+
+# ---- OS cruft ----
+.DS_Store
+Thumbs.db
+desktop.ini
