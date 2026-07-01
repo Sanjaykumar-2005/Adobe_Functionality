@@ -13,9 +13,32 @@ and rotate the keys if they ever leak.
 
 
 class AppSettings:
-    # ---- OCR service: sends {"base64_file": <b64>} -> {"extracted_text": <text>} ----
-    OCR_API_ENDPOINT = "https://ltceip4prod.azure-api.net/Chandra/extract-vector-chandra"
-    OCR_API_KEY = ""  # <-- paste your Chandra (OCR) subscription key here
+    # ---- OCR providers: selectable OCR engines (Chandra, PaddleOCR, ...) ----
+    # Each provider is one remote OCR endpoint. The user picks one in the UI.
+    # To ADD a provider: copy a block below, give it a new id (the dict key),
+    # paste its endpoint URL + subscription key, and (if its JSON differs) set
+    # "input_key"/"output_key". That's it — it shows up in the frontend dropdown.
+    #
+    #   input_key  : request JSON field that carries the base64 PDF  (default "base64_file")
+    #   output_key : response JSON field that holds the extracted text (default "extracted_text")
+    OCR_PROVIDERS = {
+        "chandra": {
+            "label": "Chandra",
+            "endpoint": "https://ltceip4prod.azure-api.net/Chandra/extract-vector-chandra",
+            "key": "",  # <-- paste the Chandra subscription key here
+            "input_key": "base64_file",
+            "output_key": "extracted_text",
+        },
+        "paddle": {
+            "label": "PaddleOCR",
+            "endpoint": "",  # <-- paste the PaddleOCR endpoint URL here
+            "key": "",       # <-- paste the PaddleOCR subscription key here
+            "input_key": "base64_file",
+            "output_key": "extracted_text",
+        },
+    }
+    # Provider selected by default (must be a key of OCR_PROVIDERS).
+    OCR_DEFAULT_PROVIDER = "chandra"
 
     # ---- LLM service: Qwen32B chat/completions (used by the Summarize feature) ----
     LLM_API_ENDPOINT = "https://ltceip4prod.azure-api.net/qwen32b/chat/completions"
@@ -31,9 +54,45 @@ class AppSettings:
     SUBSCRIPTION_KEY_HEADER = "ocp-apim-subscription-key"
 
     @classmethod
+    def ocr_provider(cls, name: str | None = None) -> dict:
+        """Return the config dict for an OCR provider (default when name is None).
+
+        Raises :class:`KeyError` if the name is not a known provider.
+        """
+        name = name or cls.OCR_DEFAULT_PROVIDER
+        prov = cls.OCR_PROVIDERS.get(name)
+        if prov is None:
+            raise KeyError(
+                f"Unknown OCR provider '{name}'. "
+                f"Choose from: {', '.join(cls.OCR_PROVIDERS)}."
+            )
+        return prov
+
+    @classmethod
+    def ocr_provider_configured(cls, name: str | None = None) -> bool:
+        """True when the given provider (default if None) has both endpoint + key."""
+        try:
+            prov = cls.ocr_provider(name)
+        except KeyError:
+            return False
+        return bool(prov.get("endpoint") and prov.get("key"))
+
+    @classmethod
     def ocr_configured(cls) -> bool:
-        """True when the OCR endpoint URL and key are both set."""
-        return bool(cls.OCR_API_ENDPOINT and cls.OCR_API_KEY)
+        """True when the DEFAULT OCR provider is configured (endpoint + key set)."""
+        return cls.ocr_provider_configured(cls.OCR_DEFAULT_PROVIDER)
+
+    @classmethod
+    def ocr_providers_public(cls) -> list:
+        """Provider list for the frontend dropdown — ids/labels only, NO keys."""
+        return [
+            {
+                "id": pid,
+                "label": p.get("label", pid),
+                "configured": bool(p.get("endpoint") and p.get("key")),
+            }
+            for pid, p in cls.OCR_PROVIDERS.items()
+        ]
 
     @classmethod
     def llm_configured(cls) -> bool:

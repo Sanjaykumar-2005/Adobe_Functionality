@@ -191,9 +191,17 @@ def convert_word_to_pdf():
     try:
         job_id = new_job_id()
         paths = save_uploads(request.files.getlist("files"), Config.ALLOWED_WORD, job_id)
-        outputs = conversion_service.word_to_pdf(paths, job_id)
+        engines: list[str] = []
+        outputs = conversion_service.word_to_pdf(paths, job_id, engines_out=engines)
         files = [file_descriptor(job_id, p) for p in outputs]
-        return ok(job_id, files, **_zip_extra(job_id, outputs))
+        extra = _zip_extra(job_id, outputs)
+        if "reportlab" in engines:
+            extra["warning"] = (
+                "No LibreOffice or Microsoft Word was found, so a text-only fallback "
+                "was used. Backgrounds, images, colors, and complex layout are NOT "
+                "preserved. Install LibreOffice for full-fidelity conversion."
+            )
+        return ok(job_id, files, **extra)
     except (FileValidationError, ValueError) as e:
         return fail(str(e), 400)
     except Exception as e:  # noqa: BLE001
@@ -601,13 +609,19 @@ def ocr_run():
         return fail(str(e), 500)
 
 
+def ocr_providers():
+    """List the selectable OCR providers (Chandra, PaddleOCR, ...) for the UI."""
+    return ok(None, **ocr_api_service.list_providers())
+
+
 def ocr_extract():
-    """Upload a PDF -> base64 -> Azure OCR API -> return {"extracted_text": ...}."""
+    """Upload a PDF -> base64 -> selected OCR provider -> {"extracted_text": ...}."""
     try:
         job_id = new_job_id()
         path = _single_pdf(job_id)
-        text = ocr_api_service.extract_text(path)
-        return ok(job_id, extracted_text=text)
+        provider = request.form.get("engine") or request.form.get("provider") or None
+        text = ocr_api_service.extract_text(path, provider=provider)
+        return ok(job_id, extracted_text=text, engine=provider)
     except (FileValidationError, ValueError) as e:
         return fail(str(e), 400)
     except Exception as e:  # noqa: BLE001
@@ -618,15 +632,17 @@ def ocr_extract():
 def ocr_summarize():
     """OCR a PDF (or accept already-extracted `text`) then summarize it with the LLM.
 
-    Send either a `file` (PDF, runs OCR first) or a `text` form field
-    (skips OCR, summarizes directly). Returns extracted_text + summary.
+    Send either a `file` (PDF, runs OCR first with the selected `engine`) or a
+    `text` form field (skips OCR, summarizes directly). Returns extracted_text +
+    summary.
     """
     try:
         job_id = new_job_id()
         text = (request.form.get("text") or "").strip()
         if not text:
             path = _single_pdf(job_id)
-            text = ocr_api_service.extract_text(path)
+            provider = request.form.get("engine") or request.form.get("provider") or None
+            text = ocr_api_service.extract_text(path, provider=provider)
         summary = llm_service.summarize(text)
         return ok(job_id, extracted_text=text, summary=summary)
     except (FileValidationError, ValueError) as e:
@@ -709,6 +725,7 @@ ROUTES = [
 
     # --- OCR ---
     ("ocr_engines_list",      ["GET"],  "/api/ocr/engines",                        ocr_engines_list),
+    ("ocr_providers",         ["GET"],  "/api/ocr/providers",                      ocr_providers),
     ("ocr_detect",            ["POST"], "/api/ocr/detect",                         ocr_detect),
     ("ocr_run",               ["POST"], "/api/ocr/run",                            ocr_run),
     ("ocr_extract",           ["POST"], "/api/ocr/extract",                        ocr_extract),

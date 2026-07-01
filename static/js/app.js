@@ -313,18 +313,9 @@
     /* ------------------------------- OCR ------------------------------ */
     {
       id: "ocr", name: "OCR", category: "OCR", icon: "🔎",
-      desc: "Extract text from a PDF (Azure OCR) and summarize it (LLM), or make a scanned PDF searchable.",
+      desc: "Extract text from a PDF (Azure OCR), then optionally summarize it (LLM).",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
-      endpoint: "/api/ocr/run", custom: "ocr",
-      options: [
-        { name: "lang", label: "Language", type: "text", default: "eng", hint: "Tesseract code, e.g. eng, fra, deu, spa." },
-        { name: "force", label: "Force OCR (re-OCR pages that already have text)", type: "checkbox", default: false },
-      ],
-      build: function (fd, o, ws) {
-        fd.append("engine", ws.ocrEngine || "tesseract");
-        fd.append("lang", o.lang || "eng");
-        fd.append("force", o.force ? "true" : "false");
-      },
+      custom: "ocr", noRun: true,   // actions live in the custom panel (Extract / Summarize)
     },
   ];
 
@@ -566,24 +557,28 @@
       void btn;
     }
 
-    // Run + results
-    var runCard = document.createElement("div");
-    runCard.className = "card";
-    runCard.innerHTML =
-      '<div class="row"><button class="btn btn-primary run-btn">▶ Run ' + tool.name + "</button>" +
-      '<span class="run-status grow"></span></div>' +
-      '<div class="result-area"></div>';
-    host.appendChild(runCard);
-    var runBtn = runCard.querySelector(".run-btn");
-    var runStatus = runCard.querySelector(".run-status");
-    var resultArea = runCard.querySelector(".result-area");
+    // Run + results — suppressed for tools whose actions live in a custom panel.
+    var runBtn = null, runStatus = null, resultArea = null;
+    if (!tool.noRun) {
+      var runCard = document.createElement("div");
+      runCard.className = "card";
+      runCard.innerHTML =
+        '<div class="row"><button class="btn btn-primary run-btn">▶ Run ' + tool.name + "</button>" +
+        '<span class="run-status grow"></span></div>' +
+        '<div class="result-area"></div>';
+      host.appendChild(runCard);
+      runBtn = runCard.querySelector(".run-btn");
+      runStatus = runCard.querySelector(".run-status");
+      resultArea = runCard.querySelector(".result-area");
+    }
 
     function updateRunState() {
+      if (!runBtn) return;
       var ready = ws.files.length > 0;
       runBtn.disabled = !ready;
     }
 
-    runBtn.onclick = function () {
+    if (runBtn) runBtn.onclick = function () {
       var opts = optForm ? readAll(optForm, tool.options) : {};
       if (!ws.files.length) { UI.toast("Add a file first.", "warn"); return; }
       var err = tool.validate ? tool.validate(ws, opts) : null;
@@ -626,6 +621,14 @@
     area.innerHTML = "";
     var files = res.files || [];
     var zip = res.zip || null;
+
+    if (res.warning) {
+      var warn = document.createElement("div");
+      warn.className = "hint-bar warn-bar";
+      warn.style.cssText = "margin:14px 0 4px;border-left:3px solid var(--warn,#e0a800);padding:8px 10px";
+      warn.innerHTML = "⚠ " + String(res.warning);
+      area.appendChild(warn);
+    }
 
     var header = document.createElement("div");
     header.className = "row";
@@ -672,61 +675,40 @@
     card.className = "card";
 
     if (tool.custom === "ocr") {
-      ws.ocrEngine = ws.ocrEngine || "tesseract";
       card.innerHTML =
-        "<h3>OCR engine</h3><p class='hint'>Choose which OCR service processes the PDF.</p>" +
-        '<div class="field"><label>Engine</label><select class="ocr-engine"><option value="tesseract">Tesseract (local)</option></select>' +
-        '<div class="hint engine-note" style="margin-top:6px"></div></div>' +
-        "<h3 style='margin-top:18px'>Detection</h3><p class='hint'>Check whether the PDF needs OCR.</p>" +
-        '<button class="btn btn-sm detect-btn">🔎 Detect scanned pages</button><div class="detect-out" style="margin-top:10px"></div>' +
-        "<h3 style='margin-top:18px'>Extract &amp; Summarize</h3>" +
-        "<p class='hint'>Extract the PDF's text via the OCR service, then optionally summarize it with the LLM.</p>" +
+        "<h3>Extract &amp; Summarize</h3>" +
+        "<p class='hint'>Upload a PDF, extract its text via the selected OCR engine, then optionally summarize it with the LLM.</p>" +
+        '<div class="row" style="gap:8px;align-items:center;margin-bottom:10px">' +
+        '<label class="hint" style="margin:0">OCR engine</label>' +
+        '<select class="ocr-provider"><option>Loading…</option></select></div>' +
         '<div class="row" style="gap:8px">' +
         '<button class="btn btn-sm extract-btn">📝 Extract text</button>' +
         '<button class="btn btn-sm summarize-btn">🧠 Summarize</button></div>' +
         '<div class="ai-out" style="margin-top:12px"></div>';
 
-      var sel = card.querySelector(".ocr-engine");
-      var note = card.querySelector(".engine-note");
-      var engineMeta = {};
-
-      function applyNote() {
-        var m = engineMeta[sel.value];
-        if (!m) { note.textContent = ""; return; }
-        note.innerHTML = m.available
-          ? "✅ Available on this server."
-          : "⚠ Not configured — " + (m.reason || m.requires || "unavailable") + " Falls back to an error until set up.";
-      }
-      sel.addEventListener("change", function () { ws.ocrEngine = sel.value; applyNote(); });
-
-      // Populate engines from the server (availability reflects real config).
-      API.getJSON("/api/ocr/engines").then(function (r) {
-        sel.innerHTML = "";
-        (r.engines || []).forEach(function (e) {
-          engineMeta[e.key] = e;
-          var op = document.createElement("option");
-          op.value = e.key;
-          op.textContent = e.label + (e.available ? "" : " — needs setup");
-          sel.appendChild(op);
+      // ---- OCR engine picker (Chandra / PaddleOCR / ...) ----
+      var providerSel = card.querySelector(".ocr-provider");
+      API.getJSON("/api/ocr/providers").then(function (r) {
+        providerSel.innerHTML = "";
+        (r.providers || []).forEach(function (p) {
+          var opt = document.createElement("option");
+          opt.value = p.id;
+          opt.textContent = p.label + (p.configured ? "" : " (needs setup)");
+          opt.disabled = !p.configured;
+          if (p.id === r.default && p.configured) opt.selected = true;
+          providerSel.appendChild(opt);
         });
-        ws.ocrEngine = (r.default && engineMeta[r.default]) ? r.default : (r.engines[0] && r.engines[0].key) || "tesseract";
-        sel.value = ws.ocrEngine;
-        applyNote();
-      }).catch(function () { /* keep the static Tesseract option on failure */ });
+        if (!providerSel.value && providerSel.options.length) {
+          // default not configured → select the first configured one, if any
+          for (var i = 0; i < providerSel.options.length; i++) {
+            if (!providerSel.options[i].disabled) { providerSel.selectedIndex = i; break; }
+          }
+        }
+      }).catch(function () {
+        providerSel.innerHTML = "<option value=''>(unavailable)</option>";
+      });
 
-      card.querySelector(".detect-btn").onclick = function () {
-        if (!ws.files.length) { UI.toast("Upload a PDF first.", "warn"); return; }
-        var out = card.querySelector(".detect-out");
-        out.innerHTML = '<span class="spinner"></span> Analyzing…';
-        var fd = new FormData(); fd.append("file", ws.files[0]);
-        API.postForm("/api/ocr/detect", fd).then(function (r) {
-          out.innerHTML = "<div class='hint-bar'>" +
-            (r.scanned ? "📷 Looks <b>scanned</b> — OCR recommended. " : "✅ Already has text. ") +
-            "Text pages: " + (r.text_pages != null ? r.text_pages : "?") + " / " + (r.total_pages != null ? r.total_pages : "?") + "</div>";
-        }).catch(function (e) { out.innerHTML = ""; UI.toast(e.message, "err"); });
-      };
-
-      // ---- Extract text (Azure OCR) + Summarize (LLM) ----
+      // ---- Extract text (OCR) + Summarize (LLM) ----
       var aiOut = card.querySelector(".ai-out");
       var lastText = "";      // cached extracted text — reused by Summarize (no re-OCR)
       var lastSummary = "";
@@ -754,6 +736,7 @@
         if (!ws.files.length) { UI.toast("Upload a PDF first.", "warn"); return; }
         aiOut.innerHTML = '<span class="spinner"></span> Extracting text…';
         var fd = new FormData(); fd.append("file", ws.files[0]);
+        if (providerSel.value) fd.append("engine", providerSel.value);
         API.postForm("/api/ocr/extract", fd).then(function (r) {
           lastText = r.extracted_text || ""; lastSummary = "";
           if (!lastText) { aiOut.innerHTML = "<div class='hint-bar'>No text returned.</div>"; return; }
@@ -764,7 +747,10 @@
       card.querySelector(".summarize-btn").onclick = function () {
         var fd = new FormData();
         if (lastText) { fd.append("text", lastText); }          // reuse extracted text
-        else if (ws.files.length) { fd.append("file", ws.files[0]); }  // OCR then summarize
+        else if (ws.files.length) {                              // OCR (selected engine) then summarize
+          fd.append("file", ws.files[0]);
+          if (providerSel.value) fd.append("engine", providerSel.value);
+        }
         else { UI.toast("Upload a PDF or extract text first.", "warn"); return; }
         aiOut.innerHTML = '<span class="spinner"></span> Summarizing…';
         API.postForm("/api/ocr/summarize", fd).then(function (r) {
