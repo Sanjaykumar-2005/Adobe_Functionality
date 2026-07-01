@@ -24,7 +24,7 @@ class AppSettings:
     OCR_PROVIDERS = {
         "chandra": {
             "label": "Chandra",
-            "endpoint": "https://ltceip4prod.azure-api.net/Chandra/extract-vector-chandra",
+            "endpoint": " ",
             "key": "",  # <-- paste the Chandra subscription key here
             "input_key": "base64_file",
             "output_key": "extracted_text",
@@ -41,7 +41,7 @@ class AppSettings:
     OCR_DEFAULT_PROVIDER = "chandra"
 
     # ---- LLM service: Qwen32B chat/completions (used by the Summarize feature) ----
-    LLM_API_ENDPOINT = "https://ltceip4prod.azure-api.net/qwen32b/chat/completions"
+    LLM_API_ENDPOINT = ""
     LLM_API_KEY = ""  # <-- paste your Qwen (LLM) subscription key here
     LLM_MAX_TOKENS = 5000
     LLM_SYSTEM_PROMPT = (
