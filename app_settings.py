@@ -10,6 +10,7 @@ Both Azure APIM services authenticate with the SAME header name
 so anyone with repo access can read the keys. Do NOT push to a public remote,
 and rotate the keys if they ever leak.
 """
+from __future__ import annotations  # allow `str | None` hints on Python 3.7–3.9 (RHEL)
 
 
 class AppSettings:

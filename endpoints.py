@@ -37,9 +37,11 @@ from utils.file_utils import (
     job_output_dir,
     make_zip,
     new_job_id,
+    output_path,
     save_upload,
     save_uploads,
     validate_upload,
+    with_suffix,
 )
 from utils.responses import fail, ok
 from services import (
@@ -50,6 +52,7 @@ from services import (
     ocr_engines,
     ocr_service,
     pdf_service,
+    pdf_to_word_service,
     security_service,
 )
 
@@ -227,13 +230,71 @@ def convert_image_to_pdf():
 
 
 def convert_pdf_to_word():
-    """Convert one or more PDFs to Word (.docx)."""
+    """Convert one or more TEXT-BASED PDFs to editable Word (.docx), no OCR.
+
+    Fidelity strategy (best first):
+      1. Microsoft Word's own PDF importer (Windows + Word) — FAITHFUL: preserves
+         backgrounds, page borders, shaded headers, images, complex layout.
+      2. Native rule-based ``pdf2word`` engine (PyMuPDF + pdfplumber + python-docx)
+         — PORTABLE (any OS incl. Linux, no Word) but reconstructs from scratch, so
+         backgrounds / page borders / complex visuals are approximated.
+
+    Scanned / image-only PDFs are rejected up front (no OCR in this feature).
+    """
     try:
         job_id = new_job_id()
         paths = save_uploads(request.files.getlist("files"), Config.ALLOWED_PDF, job_id)
-        outputs = conversion_service.pdf_to_word(paths, job_id)
+        remove_borders = _as_bool(request.form.get("remove_borders"), False)
+
+        # Reject scanned / image-only PDFs before any engine runs.
+        for src in paths:
+            ok_txt, reason = pdf_to_word_service.is_text_based(src)
+            if not ok_txt:
+                return fail(reason, 400)
+
+        # The faithful path (MS Word) can't run reliably while Word is open — its
+        # dialog-dismissal keystrokes would hit the user's window and it would fall
+        # back to the lower-fidelity engine. Ask the user to close Word first.
+        # (word_is_running() is only True on Windows with Word open; on Linux/no-Word
+        # it's False, so we go straight to the native engine.)
+        if conversion_service.word_is_running():
+            return fail(
+                "Microsoft Word is currently open. Please close ALL Word windows and "
+                "try again — this gives a faithful conversion that preserves the "
+                "background, borders and formatting. (While Word is open the app would "
+                "fall back to a lower-fidelity result.)",
+                409,
+            )
+
+        outputs, used_native = [], False
+        for src in paths:
+            dest = output_path(job_id, with_suffix(src, "", ".docx"))
+            # 1) Faithful MS Word importer (None if Word unavailable / non-Windows).
+            produced = conversion_service._pdf_to_word_word_com(src, dest)
+            if produced:
+                if remove_borders:
+                    conversion_service._strip_docx_table_borders(produced)
+                outputs.append(produced)
+                continue
+            # 2) Portable native rule-based engine.
+            result = pdf_to_word_service.convert_pdf_to_word(
+                src, dest, remove_borders=remove_borders)
+            if not result.get("success"):
+                return fail(result.get("error") or "Conversion failed.", 400)
+            outputs.append(result["output_path"])
+            used_native = True
+
         files = [file_descriptor(job_id, p) for p in outputs]
-        return ok(job_id, files, **_zip_extra(job_id, outputs))
+        extra = _zip_extra(job_id, outputs)
+        if used_native:
+            extra["warning"] = (
+                "Microsoft Word was not available, so a portable converter was used. "
+                "The text, tables, fonts and images are preserved, but backgrounds, "
+                "page borders and complex visual layout may not be fully reproduced. "
+                "For an exact-format conversion, run this on Windows with Microsoft "
+                "Word installed (and close Word before converting)."
+            )
+        return ok(job_id, files, **extra)
     except (FileValidationError, ValueError) as e:
         return fail(str(e), 400)
     except Exception as e:  # noqa: BLE001

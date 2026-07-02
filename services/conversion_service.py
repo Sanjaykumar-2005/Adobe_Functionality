@@ -298,6 +298,27 @@ def image_to_pdf(paths: list[str], job_id: str, *, page_size: str = "A4",
 # --------------------------------------------------------------------------- #
 # PDF -> Word
 # --------------------------------------------------------------------------- #
+def word_is_running() -> bool:
+    """True if Microsoft Word (WINWORD.EXE) is currently running (Windows only).
+
+    The faithful PDF->Word path (``_pdf_to_word_word_com``) dismisses Word's "convert
+    PDF" dialog by activating the Word window and sending Enter. If the user already
+    has Word open, those keystrokes hit the wrong window, so the faithful conversion
+    fails and silently falls back to the lower-fidelity pdf2docx path. Callers use this
+    to tell the user to close Word first. Always ``False`` off Windows (no Word path).
+    """
+    if os.name != "nt":
+        return False
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq WINWORD.EXE", "/NH"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return "WINWORD.EXE" in (out.stdout or "")
+    except Exception:
+        return False
+
+
 def _pdf_to_word_word_com(src: str, dest: str) -> str | None:
     """Convert a PDF to .docx using Microsoft Word's own PDF import (Windows + Word).
 
@@ -538,7 +559,69 @@ def _normalize_docx_left_shift(path: str) -> None:
         return
 
 
-def pdf_to_word(paths: list[str], job_id: str) -> list[str]:
+def _strip_docx_table_borders(path: str) -> None:
+    """Make every table in a .docx borderless (remove all table + cell borders).
+
+    Why: a PDF has no "borderless table" concept — it stores only the visual result.
+    When a PDF is imported back to Word, the importer reconstructs each detected table
+    and stamps a border on every cell, so tables that were borderless in the original
+    "come up" with full gridlines. This removes those borders again for users who want
+    the clean, borderless look back.
+
+    Caveat: this is all-or-nothing — it also removes borders from tables that were
+    *meant* to have them (the PDF can't tell the two apart), so it's opt-in. Walks all
+    tables incl. nested ones. Best-effort: never raises.
+    """
+    try:
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+    except Exception:
+        return
+
+    edges = ("top", "left", "bottom", "right", "insideH", "insideV")
+
+    def _none_borders(tag: str):
+        el = OxmlElement(tag)
+        for edge in edges:
+            e = OxmlElement(f"w:{edge}")
+            e.set(qn("w:val"), "none")
+            e.set(qn("w:sz"), "0")
+            e.set(qn("w:space"), "0")
+            el.append(e)
+        return el
+
+    try:
+        doc = Document(path)
+        body = doc.element.body
+        changed = False
+        for tbl in body.iter(qn("w:tbl")):
+            tblPr = tbl.find(qn("w:tblPr"))
+            if tblPr is None:
+                tblPr = OxmlElement("w:tblPr")
+                tbl.insert(0, tblPr)
+            old = tblPr.find(qn("w:tblBorders"))
+            if old is not None:
+                tblPr.remove(old)
+            tblPr.append(_none_borders("w:tblBorders"))
+            # Clear any per-cell borders so they don't override the table setting.
+            for tc in tbl.iter(qn("w:tc")):
+                tcPr = tc.find(qn("w:tcPr"))
+                if tcPr is None:
+                    continue
+                cb = tcPr.find(qn("w:tcBorders"))
+                if cb is not None:
+                    tcPr.remove(cb)
+            changed = True
+        if changed:
+            doc.save(path)
+    except Exception:
+        return
+
+
+def pdf_to_word(paths: list[str], job_id: str,
+                engines_out: list[str] | None = None,
+                remove_borders: bool = False) -> list[str]:
     """Convert each PDF to .docx (one per input).
 
     Fidelity strategy (best first):
@@ -554,6 +637,14 @@ def pdf_to_word(paths: list[str], job_id: str) -> list[str]:
        right-shift/overflow from pdf2docx's broken table grids) and
        ``_normalize_docx_left_shift`` (residual paragraph indent).
 
+    If ``engines_out`` is provided, the engine used for each file is appended to it
+    ("word" = faithful Word import, "pdf2docx" = repaired best-effort fallback) so
+    callers can warn the user when a file did NOT get the faithful conversion.
+
+    ``remove_borders=True`` strips all table/cell borders from each output (see
+    ``_strip_docx_table_borders``) — for users who want borderless tables back after
+    the PDF importer stamped gridlines on every reconstructed cell.
+
     Raises :class:`RuntimeError` only if BOTH paths are unavailable, or the fallback
     conversion itself fails.
     """
@@ -566,7 +657,11 @@ def pdf_to_word(paths: list[str], job_id: str) -> list[str]:
         # 1) Preferred: Word's own converter (faithful). None if unavailable/timeout.
         produced = _pdf_to_word_word_com(src, dest)
         if produced:
+            if remove_borders:
+                _strip_docx_table_borders(produced)
             outputs.append(produced)
+            if engines_out is not None:
+                engines_out.append("word")
             continue
 
         # 2) Fallback: pdf2docx + layout repairs.
@@ -587,5 +682,9 @@ def pdf_to_word(paths: list[str], job_id: str) -> list[str]:
             ) from exc
         _repair_docx_table_layout(dest)   # fix pdf2docx's broken table grids (right-shift/overflow)
         _normalize_docx_left_shift(dest)  # undo any residual uniform paragraph indent shift
+        if remove_borders:
+            _strip_docx_table_borders(dest)
         outputs.append(dest)
+        if engines_out is not None:
+            engines_out.append("pdf2docx")
     return outputs
