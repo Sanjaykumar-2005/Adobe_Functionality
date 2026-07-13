@@ -47,7 +47,22 @@ class PdfReader:
     def __init__(self, path: str) -> None:
         self.path = path
         self._doc = fitz.open(path)
-        self._plumber = pdfplumber.open(path) if _PDFPLUMBER_OK else None
+
+        # pdfplumber is only used to find tables, and tables.py already falls back
+        # to PyMuPDF when it is absent. So its failure must NOT abort the
+        # conversion: PyMuPDF above is the primary engine and has already opened
+        # the file fine. pdfminer can raise almost anything here (it surfaces even
+        # a transient MemoryError as an empty-message PdfminerException), so catch
+        # broadly and degrade to the fitz table path.
+        self._plumber = None
+        if _PDFPLUMBER_OK:
+            try:
+                self._plumber = pdfplumber.open(path)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("pdfplumber could not open %s (%s: %s) — falling back "
+                            "to PyMuPDF for table detection",
+                            path, type(exc).__name__, exc or "<no message>")
+
         log.info("PDF loaded: %s (%d pages)", path, self._doc.page_count)
 
     # ------------------------------------------------------------------ meta #

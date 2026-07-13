@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+temp/
+outputs/
+scratchpad/
+node_modules
+*.md
+Dockerfile
+docker-compose.yml

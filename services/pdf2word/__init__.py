@@ -62,7 +62,11 @@ def is_text_based(input_pdf_path: str) -> tuple[bool, str]:
         reader = PdfReader(input_pdf_path)
         return reader.is_text_based()
     except Exception as exc:  # noqa: BLE001
-        return False, f"Could not open the PDF: {exc}"
+        # Some libraries raise exceptions with an EMPTY str() (pdfminer's
+        # PdfminerException is one), which used to produce a bare, useless
+        # "Could not open the PDF:" with no reason. Always name the type.
+        detail = str(exc).strip() or f"{type(exc).__name__} (no message)"
+        return False, f"Could not open the PDF: {detail}"
     finally:
         if reader is not None:
             reader.close()

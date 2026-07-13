@@ -73,11 +73,12 @@
     },
     {
       id: "pdf-to-word", name: "PDF → Word", category: "Convert", icon: "📃",
-      desc: "Convert text-based PDFs into editable Word (.docx). On Windows with " +
-            "Microsoft Word it does a faithful, same-format conversion (keeps " +
-            "backgrounds, borders, shading) — close all Word windows first. Without " +
-            "Word it uses a portable converter (text, tables, fonts, images kept; " +
-            "backgrounds/complex layout approximated). Scanned PDFs need OCR first.",
+      desc: "Convert text-based PDFs into Word (.docx). LibreOffice does a faithful, " +
+            "same-format conversion (keeps backgrounds, borders, shading, images) — " +
+            "note its text lands in positioned frames, so the result looks right but " +
+            "is fiddly to re-edit. Without an office suite a portable converter is " +
+            "used instead (fully editable text, but backgrounds/complex layout are " +
+            "approximated). Scanned PDFs need OCR first.",
       multi: true, accept: ACCEPT_PDF, fileField: "files",
       endpoint: "/api/convert/pdf-to-word",
       options: [

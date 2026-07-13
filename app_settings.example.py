@@ -1,14 +1,20 @@
 """
-app_settings.py — Azure API settings for the OCR and LLM (summarize) services.
+app_settings.example.py — TEMPLATE. Copy this to `app_settings.py` and fill it in.
+
+    cp app_settings.example.py app_settings.py      # Linux / RHEL
+    copy app_settings.example.py app_settings.py    # Windows
+
+`app_settings.py` is the real config and is **git-ignored**, so the subscription
+keys you paste into it can never be committed or pushed. This template holds only
+empty placeholders and IS committed, so the shape of the config stays in the repo.
 
 This is the ONE place to configure the external Azure endpoints + subscription
-keys. Edit the values below directly (no .env / environment variables needed).
-Both Azure APIM services authenticate with the SAME header name
+keys. Edit the values directly (no .env / environment variables needed). Both Azure
+APIM services authenticate with the SAME header name
 (`ocp-apim-subscription-key`); only the URL + key differ per service.
 
-⚠ SECURITY: this file holds real subscription keys. It is committed to the repo,
-so anyone with repo access can read the keys. Do NOT push to a public remote,
-and rotate the keys if they ever leak.
+Leave a key blank and its feature simply reports "not configured" — the app still
+boots and every non-OCR tool works.
 """
 from __future__ import annotations  # allow `str | None` hints on Python 3.7–3.9 (RHEL)
 
@@ -25,8 +31,8 @@ class AppSettings:
     OCR_PROVIDERS = {
         "chandra": {
             "label": "Chandra",
-            "endpoint": " ",
-            "key": "",  # <-- paste the Chandra subscription key here
+            "endpoint": "",  # <-- paste the Chandra endpoint URL here
+            "key": "",       # <-- paste the Chandra subscription key here
             "input_key": "base64_file",
             "output_key": "extracted_text",
         },
@@ -42,8 +48,8 @@ class AppSettings:
     OCR_DEFAULT_PROVIDER = "chandra"
 
     # ---- LLM service: Qwen32B chat/completions (used by the Summarize feature) ----
-    LLM_API_ENDPOINT = ""
-    LLM_API_KEY = ""  # <-- paste your Qwen (LLM) subscription key here
+    LLM_API_ENDPOINT = ""  # <-- paste the Qwen (LLM) endpoint URL here
+    LLM_API_KEY = ""       # <-- paste the Qwen (LLM) subscription key here
     LLM_MAX_TOKENS = 5000
     LLM_SYSTEM_PROMPT = (
         "You are a helpful assistant that writes clear, concise summaries of documents."

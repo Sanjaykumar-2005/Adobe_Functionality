@@ -10,9 +10,15 @@ the relevant function is actually called and no fallback succeeds.
 """
 from __future__ import annotations
 
+import io
 import os
+import pathlib
 import shutil
 import subprocess
+import tempfile
+import threading
+
+import fitz
 
 from config import Config
 from utils.file_utils import output_path, stem, with_suffix
@@ -34,31 +40,110 @@ except Exception:  # pragma: no cover
 
 
 # --------------------------------------------------------------------------- #
-# Word -> PDF
+# LibreOffice — the primary conversion engine
 # --------------------------------------------------------------------------- #
+# Every LibreOffice conversion runs headless through the `soffice` binary. It is
+# the preferred engine for BOTH directions (Word->PDF and PDF->Word) because it
+# uses real office rendering/import filters, needs no Windows and no MS Word, and
+# works the same on a Linux server as on a dev laptop (see the Dockerfile).
+_SOFFICE_TIMEOUT = int(os.environ.get("SOFFICE_TIMEOUT", "300"))
+
+# A headless soffice costs a few hundred MB of RSS, and nothing else bounds how
+# many run at once: gunicorn serves workers*threads requests concurrently and each
+# conversion forks its own process. Left unbounded that is the app's largest
+# memory spike and the usual reason the container gets OOM-killed. Queue them.
+_SOFFICE_MAX_CONCURRENCY = max(1, int(os.environ.get("SOFFICE_MAX_CONCURRENCY", "1")))
+_SOFFICE_SLOTS = threading.Semaphore(_SOFFICE_MAX_CONCURRENCY)
+
+_SOFFICE_WIN_PATHS = (
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+)
+
+
 def _soffice_binary() -> str | None:
-    """Locate a LibreOffice/OpenOffice headless binary, if installed."""
+    """Locate the LibreOffice headless binary, if installed.
+
+    Honours ``LIBREOFFICE_BIN`` (or ``SOFFICE_BIN``) so a non-standard install —
+    or the one baked into the Docker image — can be pointed at explicitly.
+    """
+    for var in ("LIBREOFFICE_BIN", "SOFFICE_BIN"):
+        explicit = os.environ.get(var)
+        if explicit and os.path.exists(explicit):
+            return explicit
     for name in ("soffice", "libreoffice", "soffice.exe"):
         found = shutil.which(name)
         if found:
             return found
+    for path in _SOFFICE_WIN_PATHS:
+        if os.path.exists(path):
+            return path
     return None
 
 
-def _word_to_pdf_libreoffice(src: str, out_dir: str) -> str | None:
-    """Convert via LibreOffice headless. Returns the PDF path or ``None``."""
+def soffice_available() -> bool:
+    """True when LibreOffice can be used (callers pick their fallback on this)."""
+    return _soffice_binary() is not None
+
+
+def _run_soffice(args: list[str], out_dir: str) -> bool:
+    """Run one headless LibreOffice conversion. True when the process succeeded.
+
+    Each call gets a PRIVATE user profile (``-env:UserInstallation``). Without it,
+    two conversions running at once share ``~/.config/libreoffice`` and the second
+    one either blocks on the profile lock or exits doing nothing — which on a
+    multi-user server shows up as random empty outputs. The profile is a temp dir,
+    removed afterwards.
+    """
     binary = _soffice_binary()
     if not binary:
-        return None
+        return False
+
+    # Bounded wait: a caller that cannot get a slot in time gives up rather than
+    # piling up behind the queue until gunicorn's own timeout kills the worker.
+    if not _SOFFICE_SLOTS.acquire(timeout=_SOFFICE_TIMEOUT):
+        return False
+
+    profile = tempfile.mkdtemp(prefix="lo_profile_")
+    cmd = [
+        binary,
+        f"-env:UserInstallation={pathlib.Path(profile).as_uri()}",
+        "--headless", "--norestore", "--invisible", "--nolockcheck", "--nodefault",
+        *args,
+        "--outdir", out_dir,
+    ]
     try:
-        subprocess.run(
-            [binary, "--headless", "--convert-to", "pdf", "--outdir", out_dir, src],
-            check=True, capture_output=True, timeout=180,
-        )
+        subprocess.run(cmd, check=True, capture_output=True, timeout=_SOFFICE_TIMEOUT)
+        return True
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return False
+    finally:
+        _SOFFICE_SLOTS.release()
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+def _soffice_convert(src: str, out_dir: str, convert_to: str, ext: str,
+                     infilter: str | None = None) -> str | None:
+    """Convert *src* with LibreOffice; return the produced path (or ``None``).
+
+    LibreOffice always names its output ``<stem-of-src>.<ext>`` inside *out_dir*.
+    """
+    args = []
+    if infilter:
+        args.append(f"--infilter={infilter}")
+    args += ["--convert-to", convert_to, src]
+    if not _run_soffice(args, out_dir):
         return None
-    produced = os.path.join(out_dir, stem(src) + ".pdf")
+    produced = os.path.join(out_dir, stem(src) + ext)
     return produced if os.path.exists(produced) else None
+
+
+# --------------------------------------------------------------------------- #
+# Word -> PDF
+# --------------------------------------------------------------------------- #
+def _word_to_pdf_libreoffice(src: str, out_dir: str) -> str | None:
+    """Convert .docx/.doc -> PDF with LibreOffice. Returns the PDF path or ``None``."""
+    return _soffice_convert(src, out_dir, "pdf", ".pdf")
 
 
 def _word_to_pdf_word_com(src: str, dest: str) -> str | None:
@@ -233,24 +318,61 @@ def word_to_pdf(paths: list[str], job_id: str,
 # Image -> PDF
 # --------------------------------------------------------------------------- #
 def _prep_image(path: str):
-    """Open an image and flatten transparency/palette onto white RGB."""
+    """Open an image and flatten transparency/palette onto white RGB.
+
+    Carries the source DPI across the flatten: ``Image.new`` starts with an empty
+    ``info``, so without this a transparent PNG would lose its resolution and the
+    "Fit" page size below would fall back to the default DPI.
+    """
     im = Image.open(path)
     if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
         rgba = im.convert("RGBA")
         bg = Image.new("RGB", rgba.size, (255, 255, 255))
         bg.paste(rgba, mask=rgba.split()[-1])
+        if "dpi" in im.info:
+            bg.info["dpi"] = im.info["dpi"]
         return bg
     return im.convert("RGB")
+
+
+# Images with no DPI metadata (screenshots, most web images) are assumed to be
+# screen resolution. 96 is the near-universal convention.
+_DEFAULT_DPI = 96.0
+
+
+def _image_dpi(im) -> float:
+    """The image's horizontal DPI, or a sane default.
+
+    Metadata is routinely absent or junk (0, or absurd values from bad scanners),
+    so anything implausible is rejected rather than trusted into a broken page size.
+    """
+    dpi = im.info.get("dpi")
+    if isinstance(dpi, (tuple, list)) and dpi:
+        dpi = dpi[0]
+    try:
+        value = float(dpi)
+    except (TypeError, ValueError):
+        return _DEFAULT_DPI
+    return value if 1.0 <= value <= 2400.0 else _DEFAULT_DPI
+
+
+def _fit_page_size(im) -> tuple[float, float]:
+    """Page size in POINTS for a "Fit" page: the image's true physical size.
+
+    The old code treated 1 pixel as 1 point, which ignores DPI entirely — a
+    2000px-wide 300-DPI scan became a 27.8in page instead of 6.67in. Points are
+    1/72in, so the honest conversion is ``px / dpi * 72``.
+    """
+    dpi = _image_dpi(im)
+    return im.width * 72.0 / dpi, im.height * 72.0 / dpi
 
 
 def _place_on_page(im, page_size):
     """Return an RGB page-sized canvas with *im* centered, aspect preserved.
 
-    ``page_size`` is a ``(w, h)`` point tuple, or ``None`` (== "Fit", page equals
-    image size at 1px=1pt).
+    ``page_size`` is a ``(w, h)`` point tuple. "Fit" pages do not go through here —
+    they are written directly at their true physical size (see ``_save_fit_pdf``).
     """
-    if page_size is None:
-        return im  # Fit: page is the image itself
     pw, ph = page_size
     canvas = Image.new("RGB", (int(pw), int(ph)), (255, 255, 255))
     scale = min(pw / im.width, ph / im.height)
@@ -258,6 +380,27 @@ def _place_on_page(im, page_size):
     resized = im.resize((new_w, new_h), Image.LANCZOS)
     canvas.paste(resized, ((int(pw) - new_w) // 2, (int(ph) - new_h) // 2))
     return canvas
+
+
+def _save_fit_pdf(images: list, dest: str) -> None:
+    """Write "Fit" pages, each at its image's true physical size.
+
+    Pillow cannot do this: its PDF writer applies ONE global ``resolution`` to every
+    page and ignores per-image ``info["dpi"]`` (verified on Pillow 12), so a
+    multi-image save would force every page to the same scale. PyMuPDF lets each page
+    carry its own size, and the image is embedded at FULL resolution — no resampling.
+    """
+    doc = fitz.open()
+    try:
+        for im in images:
+            pw, ph = _fit_page_size(im)
+            page = doc.new_page(width=pw, height=ph)
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+            page.insert_image(fitz.Rect(0, 0, pw, ph), stream=buf.getvalue())
+        doc.save(dest)
+    finally:
+        doc.close()
 
 
 def image_to_pdf(paths: list[str], job_id: str, *, page_size: str = "A4",
@@ -278,8 +421,24 @@ def image_to_pdf(paths: list[str], job_id: str, *, page_size: str = "A4",
             f"Choose from: {', '.join(Config.PAGE_SIZES)}."
         )
     size = Config.PAGE_SIZES[page_size]
+    images = [_prep_image(p) for p in paths]
 
-    pages = [_place_on_page(_prep_image(p), size) for p in paths]
+    # "Fit" (size is None): every page takes its own image's physical size, so the
+    # pages legitimately differ. It cannot go through Pillow's writer, which forces
+    # a single resolution on all pages.
+    if size is None:
+        if merge:
+            dest = output_path(job_id, out_name)
+            _save_fit_pdf(images, dest)
+            return [dest]
+        outputs: list[str] = []
+        for src, im in zip(paths, images):
+            dest = output_path(job_id, with_suffix(src, "", ".pdf"))
+            _save_fit_pdf([im], dest)
+            outputs.append(dest)
+        return outputs
+
+    pages = [_place_on_page(im, size) for im in images]
 
     if merge:
         dest = output_path(job_id, out_name)
@@ -287,7 +446,7 @@ def image_to_pdf(paths: list[str], job_id: str, *, page_size: str = "A4",
         first.save(dest, "PDF", resolution=72.0, save_all=True, append_images=rest)
         return [dest]
 
-    outputs: list[str] = []
+    outputs = []
     for src, page in zip(paths, pages):
         dest = output_path(job_id, with_suffix(src, "", ".pdf"))
         page.save(dest, "PDF", resolution=72.0)
@@ -298,6 +457,33 @@ def image_to_pdf(paths: list[str], job_id: str, *, page_size: str = "A4",
 # --------------------------------------------------------------------------- #
 # PDF -> Word
 # --------------------------------------------------------------------------- #
+def _pdf_to_word_libreoffice(src: str, dest: str) -> str | None:
+    """Convert a PDF to .docx with LibreOffice's PDF import filter.
+
+    ``--infilter=writer_pdf_import`` forces the PDF into **Writer** (the default
+    would open it in Draw, which cannot save .docx at all). LibreOffice then lays
+    the page out faithfully — backgrounds, borders, shading, images and colours all
+    survive, which is what the native rule-based engine cannot do.
+
+    TRADE-OFF, and it is a real one: Writer's PDF import places text in absolutely
+    positioned FRAMES, not flowing paragraphs. The document *looks* like the
+    original but is awkward to edit or reflow in Word. Callers who need genuinely
+    editable text should prefer ``services.pdf2word`` instead.
+
+    Returns the produced .docx path, or ``None`` if LibreOffice is unavailable or
+    the conversion failed (caller then falls back).
+    """
+    out_dir = os.path.dirname(dest)
+    produced = _soffice_convert(
+        src, out_dir, "docx:MS Word 2007 XML", ".docx", infilter="writer_pdf_import",
+    )
+    if not produced:
+        return None
+    if os.path.abspath(produced) != os.path.abspath(dest):
+        shutil.move(produced, dest)
+    return dest
+
+
 def word_is_running() -> bool:
     """True if Microsoft Word (WINWORD.EXE) is currently running (Windows only).
 
@@ -626,26 +812,29 @@ def pdf_to_word(paths: list[str], job_id: str,
 
     Fidelity strategy (best first):
 
-    1. **Microsoft Word's own PDF import** (``_pdf_to_word_word_com``) — Windows +
-       Word only. Reconstructs the document faithfully (all columns/rows, page
-       framing, correct margins, no right-shift). Briefly opens Word and takes
-       keyboard focus while it converts, so it's best on a local/desktop run.
-    2. **pdf2docx fallback** — pure-Python, no Word needed. Works everywhere but is a
-       best-effort *guess* at the layout (PDF has no logical structure), so on
-       richly-formatted templates it can shift content and even drop hard-to-parse
-       cells. We post-process it with ``_repair_docx_table_layout`` (fixes the
-       right-shift/overflow from pdf2docx's broken table grids) and
-       ``_normalize_docx_left_shift`` (residual paragraph indent).
+    1. **LibreOffice** (``_pdf_to_word_libreoffice``) — the primary engine. Runs
+       anywhere (Linux server, Docker, Windows), needs no MS Word, and preserves
+       backgrounds / borders / shading / images. Its text lands in positioned
+       frames, so the result is faithful to look at but awkward to re-edit.
+    2. **Microsoft Word's own PDF import** (``_pdf_to_word_word_com``) — Windows +
+       Word only, and only reached when LibreOffice is not installed. Briefly opens
+       Word and steals keyboard focus, so it is a desktop-only path.
+    3. **pdf2docx fallback** — pure-Python, no office suite needed. A best-effort
+       *guess* at the layout (a PDF has no logical structure), so on richly
+       formatted templates it can shift content and drop hard-to-parse cells. We
+       post-process it with ``_repair_docx_table_layout`` (fixes the right-shift /
+       overflow from pdf2docx's broken table grids) and ``_normalize_docx_left_shift``
+       (residual paragraph indent).
 
     If ``engines_out`` is provided, the engine used for each file is appended to it
-    ("word" = faithful Word import, "pdf2docx" = repaired best-effort fallback) so
-    callers can warn the user when a file did NOT get the faithful conversion.
+    ("libreoffice" / "word" / "pdf2docx") so callers can warn the user when a file
+    did NOT get a faithful conversion.
 
     ``remove_borders=True`` strips all table/cell borders from each output (see
     ``_strip_docx_table_borders``) — for users who want borderless tables back after
     the PDF importer stamped gridlines on every reconstructed cell.
 
-    Raises :class:`RuntimeError` only if BOTH paths are unavailable, or the fallback
+    Raises :class:`RuntimeError` only if EVERY path is unavailable, or the last-resort
     conversion itself fails.
     """
     if not paths:
@@ -654,21 +843,29 @@ def pdf_to_word(paths: list[str], job_id: str,
     for src in paths:
         dest = output_path(job_id, with_suffix(src, "", ".docx"))
 
-        # 1) Preferred: Word's own converter (faithful). None if unavailable/timeout.
-        produced = _pdf_to_word_word_com(src, dest)
+        # 1) Preferred: LibreOffice (works on the server; no Word, no focus stealing).
+        produced = _pdf_to_word_libreoffice(src, dest)
+        engine = "libreoffice"
+
+        # 2) Only when LibreOffice is absent: Word's own importer (Windows desktop).
+        if not produced:
+            produced = _pdf_to_word_word_com(src, dest)
+            engine = "word"
+
         if produced:
             if remove_borders:
                 _strip_docx_table_borders(produced)
             outputs.append(produced)
             if engines_out is not None:
-                engines_out.append("word")
+                engines_out.append(engine)
             continue
 
-        # 2) Fallback: pdf2docx + layout repairs.
+        # 3) Last resort: pdf2docx + layout repairs.
         if not _PDF2DOCX_OK:
             raise RuntimeError(
-                "PDF->Word needs either Microsoft Word (Windows) or the 'pdf2docx' "
-                "package, neither of which is available."
+                "PDF->Word needs LibreOffice (install it, or set LIBREOFFICE_BIN), "
+                "Microsoft Word (Windows), or the 'pdf2docx' package — none of which "
+                "are available."
             )
         try:
             conv = Converter(src)

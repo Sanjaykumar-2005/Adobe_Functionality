@@ -1,3 +1,5 @@
+
+
 # ---- Python ----
 __pycache__/
 *.py[cod]
@@ -21,6 +23,11 @@ ENV/
 .env.*
 !.env.example
 
+# Holds the Azure OCR/LLM subscription keys as plain literals. Untracked so the
+# keys can never be pushed. The committed app_settings.example.py is the template:
+# copy it to app_settings.py and fill it in (the app will NOT start without it).
+app_settings.py
+
 # ---- Runtime file storage (auto-created, transient) ----
 outputs/
 temp/
@@ -28,6 +35,11 @@ temp/
 # ---- Generated demo / sample artifacts ----
 demo_output/
 sample_files/
+
+# Written by verify_all.py, which rmtree's and rebuilds it on every run. Both the
+# outputs and the _fixtures/ inputs are generated, so nothing here is worth keeping
+# (the script is the source of truth, not its results).
+verification_outputs/
 
 # ---- Test / coverage ----
 .pytest_cache/
@@ -45,3 +57,13 @@ htmlcov/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Office lock files, created whenever a .docx/.pptx in the tree is open
+~$*
+
+# Slide decks (e.g. PDF_Manager_Overview.pptx) — binary presentation artifacts,
+# not part of the app the server runs.
+*.pptx
+
+# Cygwin/Git-Bash crash dumps
+*.stackdump

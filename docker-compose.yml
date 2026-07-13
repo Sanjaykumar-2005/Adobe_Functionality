@@ -1,0 +1,38 @@
+services:
+  pdf-manager:
+    build: .
+    image: pdf-manager:latest
+    ports:
+      - "5000:5000"
+    environment:
+      FLASK_DEBUG: "0"
+      SECRET_KEY: "${SECRET_KEY:-change-me-in-production}"
+      # Bumping these needs the gunicorn --timeout in the Dockerfile raised too.
+      SOFFICE_TIMEOUT: "300"
+      MAX_CONTENT_MB: "200"
+      RETENTION_SECONDS: "3600"
+      # How many headless LibreOffice processes may run at once. Each costs a few
+      # hundred MB; raise it only if you also give the container more memory.
+      SOFFICE_MAX_CONCURRENCY: "1"
+    volumes:
+      # Job scratch space. Named volumes (not bind mounts) so the container user
+      # owns them; the janitor purges their contents hourly anyway.
+      - pdf_temp:/app/temp
+      - pdf_outputs:/app/outputs
+    restart: unless-stopped
+    # No mem_limit on purpose. A limit here does not prevent an out-of-memory
+    # condition, it just converts it into the kernel OOM-killing the container
+    # mid-conversion. The footprint is bounded above instead (SOFFICE_MAX_CONCURRENCY,
+    # gunicorn --max-requests). LibreOffice + a large PDF wants ~2 GB of headroom;
+    # on Docker Desktop that is the VM's memory setting, not this file.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  pdf_temp:
+  pdf_outputs:

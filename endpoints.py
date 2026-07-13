@@ -233,11 +233,14 @@ def convert_pdf_to_word():
     """Convert one or more TEXT-BASED PDFs to editable Word (.docx), no OCR.
 
     Fidelity strategy (best first):
-      1. Microsoft Word's own PDF importer (Windows + Word) — FAITHFUL: preserves
-         backgrounds, page borders, shaded headers, images, complex layout.
-      2. Native rule-based ``pdf2word`` engine (PyMuPDF + pdfplumber + python-docx)
-         — PORTABLE (any OS incl. Linux, no Word) but reconstructs from scratch, so
-         backgrounds / page borders / complex visuals are approximated.
+      1. LibreOffice's Writer PDF import — the PRIMARY engine. Runs on the server
+         (Linux/Docker) with no MS Word: preserves backgrounds, page borders, shaded
+         headers, images and complex layout. Its text sits in positioned frames, so
+         the result is faithful to look at but awkward to re-edit.
+      2. Microsoft Word's own importer — only when LibreOffice is not installed
+         (Windows desktop fallback).
+      3. Native rule-based ``pdf2word`` engine — last resort with no office suite at
+         all. Genuinely editable text, but backgrounds / borders are approximated.
 
     Scanned / image-only PDFs are rejected up front (no OCR in this feature).
     """
@@ -252,12 +255,12 @@ def convert_pdf_to_word():
             if not ok_txt:
                 return fail(reason, 400)
 
-        # The faithful path (MS Word) can't run reliably while Word is open — its
-        # dialog-dismissal keystrokes would hit the user's window and it would fall
-        # back to the lower-fidelity engine. Ask the user to close Word first.
-        # (word_is_running() is only True on Windows with Word open; on Linux/no-Word
-        # it's False, so we go straight to the native engine.)
-        if conversion_service.word_is_running():
+        have_soffice = conversion_service.soffice_available()
+
+        # The MS-Word path dismisses Word's "convert PDF" dialog with keystrokes, so
+        # it breaks if the user already has Word focused. That only matters when it
+        # is actually going to run — i.e. when LibreOffice ISN'T installed.
+        if not have_soffice and conversion_service.word_is_running():
             return fail(
                 "Microsoft Word is currently open. Please close ALL Word windows and "
                 "try again — this gives a faithful conversion that preserves the "
@@ -266,33 +269,44 @@ def convert_pdf_to_word():
                 409,
             )
 
-        outputs, used_native = [], False
+        outputs, engines, used_native = [], [], False
         for src in paths:
             dest = output_path(job_id, with_suffix(src, "", ".docx"))
-            # 1) Faithful MS Word importer (None if Word unavailable / non-Windows).
-            produced = conversion_service._pdf_to_word_word_com(src, dest)
+
+            # 1) LibreOffice (server default).
+            produced = conversion_service._pdf_to_word_libreoffice(src, dest)
+            engine = "libreoffice"
+
+            # 2) MS Word's importer, only if LibreOffice is absent.
+            if not produced:
+                produced = conversion_service._pdf_to_word_word_com(src, dest)
+                engine = "word"
+
             if produced:
                 if remove_borders:
                     conversion_service._strip_docx_table_borders(produced)
                 outputs.append(produced)
+                engines.append(engine)
                 continue
-            # 2) Portable native rule-based engine.
+
+            # 3) Portable native rule-based engine.
             result = pdf_to_word_service.convert_pdf_to_word(
                 src, dest, remove_borders=remove_borders)
             if not result.get("success"):
                 return fail(result.get("error") or "Conversion failed.", 400)
             outputs.append(result["output_path"])
+            engines.append("native")
             used_native = True
 
         files = [file_descriptor(job_id, p) for p in outputs]
         extra = _zip_extra(job_id, outputs)
+        extra["engines"] = engines
         if used_native:
             extra["warning"] = (
-                "Microsoft Word was not available, so a portable converter was used. "
+                "No office suite was available, so a portable converter was used. "
                 "The text, tables, fonts and images are preserved, but backgrounds, "
                 "page borders and complex visual layout may not be fully reproduced. "
-                "For an exact-format conversion, run this on Windows with Microsoft "
-                "Word installed (and close Word before converting)."
+                "Install LibreOffice on the server for an exact-format conversion."
             )
         return ok(job_id, files, **extra)
     except (FileValidationError, ValueError) as e:
