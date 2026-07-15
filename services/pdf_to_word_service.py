@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from .pdf2word import convert_pdf_to_word as _convert
-from .pdf2word import is_text_based
+from .pdf2word import is_text_based, recommend_mode
 
 
 def convert_pdf_to_word(input_pdf_path: str, output_docx_path: str,
@@ -25,4 +25,4 @@ def convert_pdf_to_word(input_pdf_path: str, output_docx_path: str,
                     remove_borders=remove_borders, progress_cb=progress_cb)
 
 
-__all__ = ["convert_pdf_to_word", "is_text_based"]
+__all__ = ["convert_pdf_to_word", "is_text_based", "recommend_mode"]

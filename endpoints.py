@@ -248,11 +248,13 @@ def convert_pdf_to_word():
         job_id = new_job_id()
         paths = save_uploads(request.files.getlist("files"), Config.ALLOWED_PDF, job_id)
         remove_borders = _as_bool(request.form.get("remove_borders"), False)
-        # "faithful" (default) = LibreOffice/Word, preserves the visual layout but
-        # lands text in frames. "editable" = the native engine, which reads every
-        # text span into flowing paragraphs — use it when the faithful path drops or
-        # hides content (e.g. text inside boxes/frames that overlap).
-        mode = (request.form.get("mode") or "faithful").strip().lower()
+        # Mode: "auto" (default) inspects each PDF and routes table-heavy or
+        # white-text-on-dark documents to the native engine (faithful office import
+        # loses those), everything else to the faithful office path. "faithful" =
+        # LibreOffice/Word (preserves visual layout, text in frames). "editable" =
+        # the native engine (flowing paragraphs, real tables, nothing hidden).
+        requested = (request.form.get("mode") or "auto").strip().lower()
+        auto = requested in ("", "auto")
 
         # Reject scanned / image-only PDFs before any engine runs.
         for src in paths:
@@ -264,8 +266,10 @@ def convert_pdf_to_word():
 
         # The MS-Word path dismisses Word's "convert PDF" dialog with keystrokes, so
         # it breaks if the user already has Word focused. That only matters when it
-        # is actually going to run — i.e. faithful mode with no LibreOffice installed.
-        if mode != "editable" and not have_soffice and conversion_service.word_is_running():
+        # is actually going to run — explicit faithful mode with no LibreOffice. (In
+        # auto mode the faithful path only runs when soffice IS present, so it can't
+        # hit the Word dialog.)
+        if requested == "faithful" and not have_soffice and conversion_service.word_is_running():
             return fail(
                 "Microsoft Word is currently open. Please close ALL Word windows and "
                 "try again — this gives a faithful conversion that preserves the "
@@ -278,6 +282,10 @@ def convert_pdf_to_word():
         outputs, engines, used_native = [], [], False
         for src in paths:
             dest = output_path(job_id, with_suffix(src, "", ".docx"))
+
+            # Auto: let the analyzer pick per file (table-heavy / white-on-dark ->
+            # editable; otherwise faithful).
+            mode = pdf_to_word_service.recommend_mode(src) if auto else requested
 
             # Editable mode: go straight to the native engine (every text span read
             # into real paragraphs — nothing hidden in overlapping frames).

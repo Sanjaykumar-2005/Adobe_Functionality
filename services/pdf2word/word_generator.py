@@ -110,6 +110,12 @@ class WordGenerator:
         if p.left_indent and not style:
             pf.left_indent = Emu(int(p.left_indent * PT_TO_EMU))
 
+        # Dark fill behind the text (code block / coloured banner): shade the
+        # paragraph so its light text reads as it did in the PDF.
+        on_dark = p.shading is not None
+        if on_dark:
+            self._set_para_shading(para, p.shading)
+
         if p.is_toc:
             self._fill_toc(para, p, page)
             return
@@ -119,9 +125,18 @@ class WordGenerator:
             if run.href:
                 self._add_hyperlink(para, run.href, run.text, run.style)
             else:
-                self._add_run(para, run.text, run.style)
+                self._add_run(para, run.text, run.style, on_dark=on_dark)
 
-    def _add_run(self, para, text: str, style) -> None:
+    @staticmethod
+    def _set_para_shading(para, color) -> None:
+        pPr = para._p.get_or_add_pPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), "%02X%02X%02X" % tuple(color))
+        pPr.append(shd)
+
+    def _add_run(self, para, text: str, style, on_dark: bool = False) -> None:
         r = para.add_run(text)
         f = r.font
         if style.font:
@@ -131,8 +146,13 @@ class WordGenerator:
         f.bold = style.bold
         f.italic = style.italic
         f.underline = style.underline
+        color = style.color
+        # Legibility net: near-white text with no dark background reproduced
+        # behind it would be invisible on the white page — clamp to dark grey.
+        if not on_dark and color and color[0] > 200 and color[1] > 200 and color[2] > 200:
+            color = (0x33, 0x33, 0x33)
         try:
-            f.color.rgb = RGBColor(*style.color)
+            f.color.rgb = RGBColor(*color)
         except Exception:
             pass
 

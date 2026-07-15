@@ -73,23 +73,24 @@
     },
     {
       id: "pdf-to-word", name: "PDF → Word", category: "Convert", icon: "📃",
-      desc: "Convert text-based PDFs into Word (.docx). LibreOffice does a faithful, " +
-            "same-format conversion (keeps backgrounds, borders, shading, images) — " +
-            "note its text lands in positioned frames, so the result looks right but " +
-            "is fiddly to re-edit. Without an office suite a portable converter is " +
-            "used instead (fully editable text, but backgrounds/complex layout are " +
-            "approximated). Scanned PDFs need OCR first.",
+      desc: "Convert text-based PDFs into Word (.docx). Auto mode picks the best " +
+            "engine per file: documents with data tables or white-on-dark text go " +
+            "to the editable engine (which extracts tables and keeps that text " +
+            "readable); everything else uses the faithful office import that keeps " +
+            "backgrounds, borders and shading. You can also force a mode. Scanned " +
+            "PDFs need OCR first.",
       multi: true, accept: ACCEPT_PDF, fileField: "files",
       endpoint: "/api/convert/pdf-to-word",
       options: [
-        { name: "mode", label: "Conversion mode", type: "select", default: "faithful",
+        { name: "mode", label: "Conversion mode", type: "select", default: "auto",
           choices: [
+            { value: "auto", label: "Auto — pick the best engine per document (recommended)" },
             { value: "faithful", label: "Faithful layout (keeps backgrounds/borders; text in frames)" },
-            { value: "editable", label: "Editable text (flowing paragraphs; best when content goes missing)" },
+            { value: "editable", label: "Editable text (flowing paragraphs; extracts tables; keeps dark-background text)" },
           ],
-          hint: "If text inside boxes or some content disappears in Faithful mode, " +
-                "switch to Editable text — it reads every text span into real, " +
-                "editable paragraphs." },
+          hint: "Auto routes table-heavy or dark-background documents to the editable " +
+                "engine (faithful office import mangles tables and hides white-on-dark " +
+                "text). Force Faithful only when you need the exact visual layout." },
         { name: "remove_borders", label: "Remove table borders (tables that were " +
           "borderless in the original gain gridlines during PDF conversion)",
           type: "checkbox", default: false },

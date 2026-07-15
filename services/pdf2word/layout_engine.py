@@ -18,11 +18,12 @@ from .hyperlinks import page_links
 from .images import ImageExtractor
 from .layout_geometry import alignment_for, content_margins, detect_column_split
 from .lists import ListDetector
-from .model import Page, Paragraph
+from .model import BBox, Page, Paragraph
 from .paragraphs import ParagraphBuilder, extract_lines
 from .reader import RawPage
 from .tables import TableDetector
 from .toc import TocDetector
+from .utils import point_in_any
 from .whitespace import WhitespaceAnalyzer
 
 log = logging.getLogger("pdf2word.layout")
@@ -74,6 +75,11 @@ class LayoutEngine:
         self._toc.apply(paragraphs)
         self._headings.assign(paragraphs, body_size=0.0)
 
+        # 3b) White/light text on a dark fill (code blocks, coloured banners) would
+        #     be invisible on the white page. Re-attach the dark fill as paragraph
+        #     shading so it stays readable (light text on the dark block, as in the PDF).
+        self._shade_light_on_dark(paragraphs, fp, table_boxes)
+
         # 4) Drop repeated header/footer text sitting in the page bands.
         if exclude:
             paragraphs = [p for p in paragraphs
@@ -93,6 +99,59 @@ class LayoutEngine:
         )
 
     # ------------------------------------------------------------------ utils #
+    @staticmethod
+    def _has_light_text(p: Paragraph) -> bool:
+        """True if any run is near-white (would vanish on a white page)."""
+        for r in p.runs:
+            c = r.style.color or (0, 0, 0)
+            if c[0] > 200 and c[1] > 200 and c[2] > 200 and r.text.strip():
+                return True
+        return False
+
+    @staticmethod
+    def _dark_fills(fp, exclude_boxes: list[BBox]) -> list[tuple[BBox, tuple[int, int, int]]]:
+        """Near-black / dark filled rectangles from the page's vector graphics.
+
+        Returns (bbox, rgb) pairs. Table regions are skipped — table cells own
+        their own backgrounds and are already rendered legibly.
+        """
+        out: list[tuple[BBox, tuple[int, int, int]]] = []
+        try:
+            drawings = fp.get_drawings()
+        except Exception:
+            return out
+        for d in drawings:
+            fill = d.get("fill")
+            rect = d.get("rect")
+            if not fill or rect is None:
+                continue
+            r, g, b = fill[0], fill[1], fill[2]
+            lum = 0.299 * r + 0.587 * g + 0.114 * b     # perceived brightness 0..1
+            if lum > 0.5:
+                continue                                 # not a dark fill
+            cx, cy = (rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2
+            if point_in_any(cx, cy, exclude_boxes, pad=2.0):
+                continue                                 # inside a table
+            out.append(((rect.x0, rect.y0, rect.x1, rect.y1),
+                        (int(r * 255), int(g * 255), int(b * 255))))
+        return out
+
+    def _shade_light_on_dark(self, paragraphs, fp, table_boxes) -> None:
+        """Tag paragraphs whose light text sits on a dark fill with that fill colour."""
+        candidates = [p for p in paragraphs if self._has_light_text(p)]
+        if not candidates:
+            return
+        fills = self._dark_fills(fp, table_boxes)
+        if not fills:
+            return
+        for p in candidates:
+            cx = (p.bbox[0] + p.bbox[2]) / 2
+            cy = (p.bbox[1] + p.bbox[3]) / 2
+            for (x0, y0, x1, y1), col in fills:
+                if x0 - 2 <= cx <= x1 + 2 and y0 - 2 <= cy <= y1 + 2:
+                    p.shading = col
+                    break
+
     @staticmethod
     def _is_running_hf(p: Paragraph, page_h: float, exclude: set[str]) -> bool:
         text = p.text.strip()

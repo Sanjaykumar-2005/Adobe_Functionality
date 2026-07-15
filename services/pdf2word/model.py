@@ -76,6 +76,7 @@ class Paragraph:
     line_gap: float = 0.0                           # median inter-line gap (points)
     is_toc: bool = False                            # render with dot-leader tab stop
     toc_page: Optional[str] = None                  # trailing page number for a TOC row
+    shading: Optional[Color] = None                 # dark cell/code-block fill behind the text
     bbox: BBox = (0.0, 0.0, 0.0, 0.0)
 
     @property

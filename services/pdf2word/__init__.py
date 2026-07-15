@@ -35,10 +35,12 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from .analyze import recommend_mode
 from .converter import PdfToWordConverter
 from .reader import PdfReader
 
-__all__ = ["convert_pdf_to_word", "is_text_based", "PdfToWordConverter"]
+__all__ = ["convert_pdf_to_word", "is_text_based", "recommend_mode",
+           "PdfToWordConverter"]
 
 
 def convert_pdf_to_word(input_pdf_path: str, output_docx_path: str,

@@ -279,14 +279,23 @@ def _word_to_pdf_reportlab(src: str, dest: str) -> str:
 
 def word_to_pdf(paths: list[str], job_id: str,
                 engines_out: list[str] | None = None) -> list[str]:
-    """Convert each .docx/.doc to PDF, trying LibreOffice -> docx2pdf -> reportlab.
+    """Convert each .docx/.doc to PDF, trying Word -> LibreOffice -> reportlab.
 
     Returns one PDF per input (in order). The pure-python fallback guarantees a
     result even with no office suite installed — but it is TEXT-ONLY (drops
     backgrounds, images, colors, complex layout).
 
+    Engine order (best fidelity first):
+      1. MS Word via COM (``_word_to_pdf_word_com``) — Word's own renderer, so
+         the PDF matches how Word displays the .docx exactly. Windows + Word only;
+         returns ``None`` off Windows, so the server never touches this path.
+      2. LibreOffice (``soffice``) — the server's engine. Re-renders the doc with
+         its own layout/font substitution, so on a machine that ALSO has Word the
+         result can drift from the original — which is why Word is tried first.
+      3. docx2pdf, then the pure-python reportlab last resort (text-only).
+
     If ``engines_out`` is provided, the engine used for each file is appended to
-    it ("libreoffice" / "word" / "reportlab") so callers can warn on fallback.
+    it ("word" / "libreoffice" / "reportlab") so callers can warn on fallback.
     """
     if not paths:
         raise ValueError("No input documents provided.")
@@ -294,14 +303,17 @@ def word_to_pdf(paths: list[str], job_id: str,
     results: list[str] = []
     for src in paths:
         dest = output_path(job_id, with_suffix(src, "", ".pdf"))
-        engine = "libreoffice"
-        produced = _word_to_pdf_libreoffice(src, out_dir)
-        if produced and os.path.abspath(produced) != os.path.abspath(dest):
-            shutil.move(produced, dest)
-            produced = dest
+        # MS Word first: on Windows+Word it's pixel-faithful to the original.
+        # No-ops (returns None) on Linux, so the server falls straight through
+        # to LibreOffice below.
+        engine = "word"
+        produced = _word_to_pdf_word_com(src, dest)
         if not produced:
-            engine = "word"
-            produced = _word_to_pdf_word_com(src, dest)
+            engine = "libreoffice"
+            produced = _word_to_pdf_libreoffice(src, out_dir)
+            if produced and os.path.abspath(produced) != os.path.abspath(dest):
+                shutil.move(produced, dest)
+                produced = dest
         if not produced:
             engine = "word"
             produced = _word_to_pdf_docx2pdf(src, dest)
