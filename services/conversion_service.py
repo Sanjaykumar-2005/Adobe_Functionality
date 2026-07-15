@@ -367,49 +367,59 @@ def _fit_page_size(im) -> tuple[float, float]:
     return im.width * 72.0 / dpi, im.height * 72.0 / dpi
 
 
-def _place_on_page(im, page_size):
-    """Return an RGB page-sized canvas with *im* centered, aspect preserved.
+def _fit_rect(im, pw: float, ph: float) -> "fitz.Rect":
+    """Rect that centers *im* inside a ``pw`` x ``ph`` point page, aspect preserved.
 
-    ``page_size`` is a ``(w, h)`` point tuple. "Fit" pages do not go through here —
-    they are written directly at their true physical size (see ``_save_fit_pdf``).
+    The image is scaled to touch the nearest page edges (no cropping, no distortion)
+    and centered — the same "fit to page" placement as before, but expressed as a
+    target rectangle for PyMuPDF rather than a rasterized canvas.
     """
-    pw, ph = page_size
-    canvas = Image.new("RGB", (int(pw), int(ph)), (255, 255, 255))
     scale = min(pw / im.width, ph / im.height)
-    new_w, new_h = max(1, int(im.width * scale)), max(1, int(im.height * scale))
-    resized = im.resize((new_w, new_h), Image.LANCZOS)
-    canvas.paste(resized, ((int(pw) - new_w) // 2, (int(ph) - new_h) // 2))
-    return canvas
+    rw, rh = im.width * scale, im.height * scale
+    x, y = (pw - rw) / 2.0, (ph - rh) / 2.0
+    return fitz.Rect(x, y, x + rw, y + rh)
 
 
-def _save_fit_pdf(images: list, dest: str) -> None:
-    """Write "Fit" pages, each at its image's true physical size.
+def _save_pdf(images: list, dest: str, size) -> None:
+    """Write *images* to a PDF with PyMuPDF, each embedded at FULL resolution.
 
-    Pillow cannot do this: its PDF writer applies ONE global ``resolution`` to every
-    page and ignores per-image ``info["dpi"]`` (verified on Pillow 12), so a
-    multi-image save would force every page to the same scale. PyMuPDF lets each page
-    carry its own size, and the image is embedded at FULL resolution — no resampling.
+    ``size`` is a ``(w, h)`` point tuple for a fixed page (A4/Letter/…), or ``None``
+    for "Fit" (each page takes its own image's true physical size).
+
+    Why PyMuPDF for BOTH cases instead of Pillow: Pillow's PDF writer rasterizes each
+    page onto a canvas sized in points (~72 px per inch) and downsamples the image
+    into it, so a 2000 px photo on an A4 page collapsed to ~595 px wide — badly blurry.
+    PyMuPDF instead embeds the ORIGINAL image pixels and lets the page rect scale
+    them, so the stored image keeps its native resolution and stays sharp. (Pillow
+    also forces one global DPI across all pages, which broke multi-image "Fit".)
     """
     doc = fitz.open()
     try:
         for im in images:
-            pw, ph = _fit_page_size(im)
+            if size is None:
+                pw, ph = _fit_page_size(im)
+                rect = fitz.Rect(0, 0, pw, ph)
+            else:
+                pw, ph = size
+                rect = _fit_rect(im, pw, ph)
             page = doc.new_page(width=pw, height=ph)
             buf = io.BytesIO()
+            # PNG keeps the pixels lossless; the image is embedded as-is (no resample).
             im.save(buf, "PNG")
-            page.insert_image(fitz.Rect(0, 0, pw, ph), stream=buf.getvalue())
-        doc.save(dest)
+            page.insert_image(rect, stream=buf.getvalue())
+        doc.save(dest, deflate=True)
     finally:
         doc.close()
 
 
 def image_to_pdf(paths: list[str], job_id: str, *, page_size: str = "A4",
                  merge: bool = True, out_name: str = "images.pdf") -> list[str]:
-    """Convert images to PDF using Pillow.
+    """Convert images to PDF, embedding each image at full resolution (PyMuPDF).
 
     *page_size* is a key of ``Config.PAGE_SIZES`` ("Fit" makes each page match its
     image). Images keep aspect ratio, centered on white. ``merge=True`` yields one
-    multi-page PDF; otherwise one PDF per image.
+    multi-page PDF; otherwise one PDF per image. Images are NOT downsampled — the page
+    only scales them for display — so scans/photos stay sharp (see ``_save_pdf``).
     """
     if not _PIL_OK:
         raise RuntimeError("Image->PDF requires Pillow, which is not installed.")
@@ -420,36 +430,18 @@ def image_to_pdf(paths: list[str], job_id: str, *, page_size: str = "A4",
             f"Unknown page_size '{page_size}'. "
             f"Choose from: {', '.join(Config.PAGE_SIZES)}."
         )
-    size = Config.PAGE_SIZES[page_size]
+    size = Config.PAGE_SIZES[page_size]  # None for "Fit"
     images = [_prep_image(p) for p in paths]
-
-    # "Fit" (size is None): every page takes its own image's physical size, so the
-    # pages legitimately differ. It cannot go through Pillow's writer, which forces
-    # a single resolution on all pages.
-    if size is None:
-        if merge:
-            dest = output_path(job_id, out_name)
-            _save_fit_pdf(images, dest)
-            return [dest]
-        outputs: list[str] = []
-        for src, im in zip(paths, images):
-            dest = output_path(job_id, with_suffix(src, "", ".pdf"))
-            _save_fit_pdf([im], dest)
-            outputs.append(dest)
-        return outputs
-
-    pages = [_place_on_page(im, size) for im in images]
 
     if merge:
         dest = output_path(job_id, out_name)
-        first, rest = pages[0], pages[1:]
-        first.save(dest, "PDF", resolution=72.0, save_all=True, append_images=rest)
+        _save_pdf(images, dest, size)
         return [dest]
 
-    outputs = []
-    for src, page in zip(paths, pages):
+    outputs: list[str] = []
+    for src, im in zip(paths, images):
         dest = output_path(job_id, with_suffix(src, "", ".pdf"))
-        page.save(dest, "PDF", resolution=72.0)
+        _save_pdf([im], dest, size)
         outputs.append(dest)
     return outputs
 

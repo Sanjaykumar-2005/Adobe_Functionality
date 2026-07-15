@@ -248,6 +248,11 @@ def convert_pdf_to_word():
         job_id = new_job_id()
         paths = save_uploads(request.files.getlist("files"), Config.ALLOWED_PDF, job_id)
         remove_borders = _as_bool(request.form.get("remove_borders"), False)
+        # "faithful" (default) = LibreOffice/Word, preserves the visual layout but
+        # lands text in frames. "editable" = the native engine, which reads every
+        # text span into flowing paragraphs — use it when the faithful path drops or
+        # hides content (e.g. text inside boxes/frames that overlap).
+        mode = (request.form.get("mode") or "faithful").strip().lower()
 
         # Reject scanned / image-only PDFs before any engine runs.
         for src in paths:
@@ -259,13 +264,14 @@ def convert_pdf_to_word():
 
         # The MS-Word path dismisses Word's "convert PDF" dialog with keystrokes, so
         # it breaks if the user already has Word focused. That only matters when it
-        # is actually going to run — i.e. when LibreOffice ISN'T installed.
-        if not have_soffice and conversion_service.word_is_running():
+        # is actually going to run — i.e. faithful mode with no LibreOffice installed.
+        if mode != "editable" and not have_soffice and conversion_service.word_is_running():
             return fail(
                 "Microsoft Word is currently open. Please close ALL Word windows and "
                 "try again — this gives a faithful conversion that preserves the "
                 "background, borders and formatting. (While Word is open the app would "
-                "fall back to a lower-fidelity result.)",
+                "fall back to a lower-fidelity result.) Tip: choose the 'Editable text' "
+                "mode to convert without Word.",
                 409,
             )
 
@@ -273,6 +279,18 @@ def convert_pdf_to_word():
         for src in paths:
             dest = output_path(job_id, with_suffix(src, "", ".docx"))
 
+            # Editable mode: go straight to the native engine (every text span read
+            # into real paragraphs — nothing hidden in overlapping frames).
+            if mode == "editable":
+                result = pdf_to_word_service.convert_pdf_to_word(
+                    src, dest, remove_borders=remove_borders)
+                if not result.get("success"):
+                    return fail(result.get("error") or "Conversion failed.", 400)
+                outputs.append(result["output_path"])
+                engines.append("native")
+                continue
+
+            # Faithful mode ---------------------------------------------------
             # 1) LibreOffice (server default).
             produced = conversion_service._pdf_to_word_libreoffice(src, dest)
             engine = "libreoffice"

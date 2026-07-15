@@ -182,6 +182,28 @@ button { font-family: inherit; cursor: pointer; }
 }
 .file-item .fi-remove:hover { background: var(--err); color: #fff; }
 
+/* --------------------- Reorderable file cards (merge) ------------------- */
+.file-reorder { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.reorder-item {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 9px 12px; cursor: grab; user-select: none;
+}
+.reorder-item.dragging { opacity: .4; }
+.reorder-item .drag-grip { color: var(--text-muted); font-size: 16px; cursor: grab; }
+.reorder-item .order-badge {
+  min-width: 22px; height: 22px; padding: 0 6px; background: var(--accent); color: #fff;
+  border-radius: 11px; display: grid; place-items: center; font-size: 11px; font-weight: 700;
+}
+.reorder-item .fi-icon { color: var(--accent); font-size: 18px; }
+.reorder-item .fi-name { font-weight: 600; word-break: break-all; }
+.reorder-item .fi-size { color: var(--text-muted); font-size: 12px; }
+.reorder-item .fi-remove {
+  margin-left: auto; border: none; background: transparent; color: var(--text-muted);
+  font-size: 18px; line-height: 1; width: 28px; height: 28px; border-radius: 6px; cursor: pointer;
+}
+.reorder-item .fi-remove:hover { background: var(--err); color: #fff; }
+
 /* ------------------------------- Buttons -------------------------------- */
 .btn {
   display: inline-flex; align-items: center; gap: 8px; justify-content: center;

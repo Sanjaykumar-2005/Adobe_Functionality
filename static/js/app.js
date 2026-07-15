@@ -82,11 +82,20 @@
       multi: true, accept: ACCEPT_PDF, fileField: "files",
       endpoint: "/api/convert/pdf-to-word",
       options: [
+        { name: "mode", label: "Conversion mode", type: "select", default: "faithful",
+          choices: [
+            { value: "faithful", label: "Faithful layout (keeps backgrounds/borders; text in frames)" },
+            { value: "editable", label: "Editable text (flowing paragraphs; best when content goes missing)" },
+          ],
+          hint: "If text inside boxes or some content disappears in Faithful mode, " +
+                "switch to Editable text — it reads every text span into real, " +
+                "editable paragraphs." },
         { name: "remove_borders", label: "Remove table borders (tables that were " +
           "borderless in the original gain gridlines during PDF conversion)",
           type: "checkbox", default: false },
       ],
       build: function (fd, o) {
+        fd.append("mode", o.mode);
         fd.append("remove_borders", o.remove_borders ? "true" : "false");
       },
     },
@@ -94,8 +103,8 @@
     /* ---------------------------- ORGANIZE ---------------------------- */
     {
       id: "merge", name: "Merge", category: "Organize", icon: "🔗",
-      desc: "Combine several PDFs into one. Files merge in the order listed.",
-      multi: true, accept: ACCEPT_PDF, fileField: "files",
+      desc: "Combine several PDFs into one. Drag the files to set the merge order.",
+      multi: true, accept: ACCEPT_PDF, fileField: "files", reorderableFiles: true,
       endpoint: "/api/organize/merge",
       options: [],
       validate: function (ws) { return ws.files.length < 2 ? "Add at least two PDFs to merge." : null; },
@@ -472,22 +481,21 @@
       '<div class="dz-hint">or click to browse · accepts ' + tool.accept + "</div></div>" +
       '<input type="file" class="hidden" ' + (tool.multi ? "multiple" : "") + ' accept="' + tool.accept + '">' +
       '<ul class="file-list"></ul>' +
-      (tool.reorderable ? '<div class="reorder-hint hint" style="margin-top:6px"></div><div class="img-reorder-host"></div>' : "");
+      (tool.reorderable || tool.reorderableFiles ? '<div class="reorder-hint hint" style="margin-top:6px"></div><div class="reorder-host"></div>' : "");
     host.appendChild(upCard);
     var zone = upCard.querySelector(".dropzone");
     var input = upCard.querySelector('input[type="file"]');
     var listEl = upCard.querySelector(".file-list");
-    var reorderHost = upCard.querySelector(".img-reorder-host");
+    var reorderHost = upCard.querySelector(".reorder-host");
 
     function refreshFiles() {
-      if (tool.reorderable) {
-        // Draggable thumbnail strip; page order = ws.files order (sent as-is).
+      // Draggable reorder UIs (image thumbnails or PDF file cards). In both cases
+      // the send order == ws.files order, so reordering the array is all that's
+      // needed — no separate order model, and the tool.build stays as-is.
+      if (tool.reorderable || tool.reorderableFiles) {
         listEl.style.display = "none";
         var rh = upCard.querySelector(".reorder-hint");
-        if (rh) rh.textContent = ws.files.length
-          ? "Drag thumbnails to reorder — the first image becomes page 1."
-          : "";
-        UI.renderImageReorder(reorderHost, ws.files, {
+        var reorderCbs = {
           onReorder: function (from, to) {
             var moved = ws.files.splice(from, 1)[0];
             ws.files.splice(to, 0, moved);
@@ -497,7 +505,18 @@
             ws.files.splice(i, 1);
             refreshFiles(); updateRunState();
           },
-        });
+        };
+        if (tool.reorderable) {
+          if (rh) rh.textContent = ws.files.length
+            ? "Drag thumbnails to reorder — the first image becomes page 1."
+            : "";
+          UI.renderImageReorder(reorderHost, ws.files, reorderCbs);
+        } else {
+          if (rh) rh.textContent = ws.files.length
+            ? "Drag files to reorder — merging runs top to bottom."
+            : "";
+          UI.renderFileReorder(reorderHost, ws.files, reorderCbs);
+        }
         updateRunState();
         return;
       }
@@ -956,11 +975,25 @@
     upCard.innerHTML = "<h3>1. Upload files</h3>" +
       '<div class="dropzone"><div class="dz-icon">⬆️</div><div class="dz-main">Drag & drop files</div>' +
       '<div class="dz-hint">or click to browse</div></div>' +
-      '<input type="file" class="hidden" multiple><ul class="file-list"></ul>';
+      '<input type="file" class="hidden" multiple>' +
+      '<div class="reorder-hint hint" style="margin-top:6px"></div><div class="reorder-host"></div>';
     host.appendChild(upCard);
-    var listEl = upCard.querySelector(".file-list");
+    var reorderHost = upCard.querySelector(".reorder-host");
     function refreshFiles() {
-      UI.renderFileList(listEl, ws.files, function (i) { ws.files.splice(i, 1); refreshFiles(); });
+      // Draggable file cards; the send order == ws.files order (matters when the
+      // chosen op is Merge, which combines all uploads into one PDF top-to-bottom).
+      var rh = upCard.querySelector(".reorder-hint");
+      if (rh) rh.textContent = ws.files.length
+        ? "Drag files to reorder — used as the merge order when the operation is Merge."
+        : "";
+      UI.renderFileReorder(reorderHost, ws.files, {
+        onReorder: function (from, to) {
+          var moved = ws.files.splice(from, 1)[0];
+          ws.files.splice(to, 0, moved);
+          refreshFiles();
+        },
+        onRemove: function (i) { ws.files.splice(i, 1); refreshFiles(); },
+      });
     }
     UI.dropzone(upCard.querySelector(".dropzone"), upCard.querySelector('input[type="file"]'), function (files) {
       ws.files = ws.files.concat(files); refreshFiles();

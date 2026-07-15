@@ -235,6 +235,60 @@
     });
   }
 
+  /* ----------------- Reorderable file cards (any type) ------------------ */
+  /**
+   * Render the chosen Files as a draggable vertical list so the user can set
+   * their order (e.g. the page order when merging PDFs — top = first). Shows a
+   * document icon + name + size + order badge; no thumbnail, so it works for any
+   * file type. Mutates nothing itself; the caller supplies callbacks that reorder
+   * / remove from its own files array.
+   *
+   * @param {HTMLElement} container
+   * @param {File[]} files
+   * @param {{onReorder:(from:number,to:number)=>void, onRemove:(i:number)=>void}} cbs
+   */
+  function renderFileReorder(container, files, cbs) {
+    container.innerHTML = "";
+    if (!files.length) return;
+
+    var listEl = document.createElement("div");
+    listEl.className = "file-reorder";
+    container.appendChild(listEl);
+
+    files.forEach(function (f, i) {
+      var row = document.createElement("div");
+      row.className = "reorder-item";
+      row.draggable = true;
+      row.dataset.idx = i;
+      row.innerHTML =
+        '<span class="drag-grip" title="Drag to reorder" aria-hidden="true">⠿</span>' +
+        '<span class="order-badge">' + (i + 1) + "</span>" +
+        '<span class="fi-icon">📄</span>' +
+        '<span class="grow"><div class="fi-name"></div><div class="fi-size"></div></span>' +
+        '<button class="fi-remove" title="Remove" aria-label="Remove">×</button>';
+      row.querySelector(".fi-name").textContent = f.name;
+      row.querySelector(".fi-size").textContent = API.humanSize(f.size);
+      row.querySelector(".fi-remove").addEventListener("click", function (e) {
+        e.stopPropagation();
+        cbs.onRemove(i);
+      });
+      listEl.appendChild(row);
+    });
+
+    var dragIdx = null;
+    listEl.querySelectorAll(".reorder-item").forEach(function (el) {
+      el.addEventListener("dragstart", function () { dragIdx = +el.dataset.idx; el.classList.add("dragging"); });
+      el.addEventListener("dragend", function () { el.classList.remove("dragging"); });
+      el.addEventListener("dragover", function (e) { e.preventDefault(); });
+      el.addEventListener("drop", function (e) {
+        e.preventDefault();
+        var target = +el.dataset.idx;
+        if (dragIdx == null || dragIdx === target) return;
+        cbs.onReorder(dragIdx, target);
+      });
+    });
+  }
+
   /* -------------------------- Thumbnail grid ---------------------------- */
   /**
    * Render a thumbnail grid and wire interaction per `mode`.
@@ -424,6 +478,7 @@
     dropzone: dropzone,
     renderFileList: renderFileList,
     renderImageReorder: renderImageReorder,
+    renderFileReorder: renderFileReorder,
     renderThumbnails: renderThumbnails,
   };
 })(window);
