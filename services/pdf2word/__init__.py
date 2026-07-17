@@ -45,15 +45,19 @@ __all__ = ["convert_pdf_to_word", "is_text_based", "recommend_mode",
 
 def convert_pdf_to_word(input_pdf_path: str, output_docx_path: str,
                         remove_borders: bool = False,
+                        page_breaks: bool = True,
                         progress_cb: Optional[Callable[[int, int, str], None]] = None) -> dict:
     """Convenience wrapper around :class:`PdfToWordConverter`.
+
+    ``page_breaks=False`` produces one continuously-flowing document (no forced
+    break per PDF page, so no manufactured blank/half-empty pages) — used by auto mode.
 
     Returns ``{"success": bool, "output_path": str|None, "error": str|None,
     "pages": int}``.
     """
     return PdfToWordConverter().convert(
         input_pdf_path, output_docx_path,
-        remove_borders=remove_borders, progress_cb=progress_cb,
+        remove_borders=remove_borders, page_breaks=page_breaks, progress_cb=progress_cb,
     )
 
 

@@ -290,8 +290,11 @@ def convert_pdf_to_word():
             # Editable mode: go straight to the native engine (every text span read
             # into real paragraphs — nothing hidden in overlapping frames).
             if mode == "editable":
+                # Auto drives clean continuous flow (no forced break per PDF page,
+                # so no manufactured blank/half-empty pages). Explicit "editable"
+                # keeps the strict 1-PDF-page = 1-Word-page mapping.
                 result = pdf_to_word_service.convert_pdf_to_word(
-                    src, dest, remove_borders=remove_borders)
+                    src, dest, remove_borders=remove_borders, page_breaks=not auto)
                 if not result.get("success"):
                     return fail(result.get("error") or "Conversion failed.", 400)
                 outputs.append(result["output_path"])
@@ -317,7 +320,7 @@ def convert_pdf_to_word():
 
             # 3) Portable native rule-based engine.
             result = pdf_to_word_service.convert_pdf_to_word(
-                src, dest, remove_borders=remove_borders)
+                src, dest, remove_borders=remove_borders, page_breaks=not auto)
             if not result.get("success"):
                 return fail(result.get("error") or "Conversion failed.", 400)
             outputs.append(result["output_path"])

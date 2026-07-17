@@ -32,8 +32,12 @@ class PdfToWordConverter:
 
     def convert(self, input_pdf_path: str, output_docx_path: str, *,
                 remove_borders: bool = False,
+                page_breaks: bool = True,
                 progress_cb: Optional[ProgressCb] = None) -> dict:
         """Run the full pipeline.
+
+        ``page_breaks=False`` suppresses the forced page break between PDF pages
+        (continuous flow, no manufactured blank/half-empty pages) — used by auto mode.
 
         Returns ``{"success", "output_path", "error", "pages"}``.
         """
@@ -55,7 +59,7 @@ class PdfToWordConverter:
             # Header/footer detection needs a cheap cross-page pre-scan.
             hf = HeaderFooterDetector().detect(reader.band_lines())
 
-            gen = WordGenerator(remove_borders=remove_borders)
+            gen = WordGenerator(remove_borders=remove_borders, page_breaks=page_breaks)
             gen.set_header_footer(hf["header"], hf["footer"])
             engine = LayoutEngine()
 

@@ -38,9 +38,15 @@ _ALIGN = {
 class WordGenerator:
     """Build a .docx from :class:`Page` models, one page at a time."""
 
-    def __init__(self, remove_borders: bool = False) -> None:
+    def __init__(self, remove_borders: bool = False, page_breaks: bool = True) -> None:
         self.doc = DocxDocument()
         self.remove_borders = remove_borders
+        # When False, no hard page break is forced between PDF pages: content flows
+        # continuously and Word paginates naturally. Reflowed text never lines up
+        # with the original PDF page heights, so forcing a break per PDF page leaves
+        # half-empty pages / blank pages. Auto mode turns this off for clean output;
+        # explicit "editable" keeps it on for strict 1-PDF-page = 1-Word-page mapping.
+        self.page_breaks = page_breaks
         self._header_text: str | None = None
         self._footer_text: str | None = None
         self._section_ready = False
@@ -53,7 +59,7 @@ class WordGenerator:
     def add_page(self, page: Page, first: bool) -> None:
         if first:
             self._setup_section(page)
-        else:
+        elif self.page_breaks:
             self.doc.add_page_break()
         for el in page.elements:
             try:

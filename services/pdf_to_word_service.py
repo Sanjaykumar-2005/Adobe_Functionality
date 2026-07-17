@@ -18,11 +18,16 @@ from .pdf2word import is_text_based, recommend_mode
 
 def convert_pdf_to_word(input_pdf_path: str, output_docx_path: str,
                         remove_borders: bool = False,
+                        page_breaks: bool = True,
                         progress_cb: Optional[Callable[[int, int, str], None]] = None) -> dict:
     """Delegate to the modular pdf2word engine. Returns
-    ``{"success", "output_path", "error", "pages"}``."""
+    ``{"success", "output_path", "error", "pages"}``.
+
+    ``page_breaks=False`` = continuous flow (no forced page break per PDF page);
+    auto mode uses it to avoid manufactured blank/half-empty pages."""
     return _convert(input_pdf_path, output_docx_path,
-                    remove_borders=remove_borders, progress_cb=progress_cb)
+                    remove_borders=remove_borders, page_breaks=page_breaks,
+                    progress_cb=progress_cb)
 
 
 __all__ = ["convert_pdf_to_word", "is_text_based", "recommend_mode"]
