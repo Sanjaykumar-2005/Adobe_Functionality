@@ -299,8 +299,11 @@
    * @param {object} selection shared state, mutated in place:
    *        - select   -> selection.pages : Set<number>
    *        - rearrange-> selection.order : number[] (1-based, current order)
-   *        - crop     -> selection.cropBox : {x0,y0,x1,y1} | null  (+ selection.pages for "which pages")
-   *        - redact   -> selection.redactBoxes : [{page,x0,y0,x1,y1}]
+   *        - crop     -> selection.cropBoxes : [{page,x0,y0,x1,y1}]  (at most one per page)
+   *        - redact   -> selection.redactBoxes : [{page,x0,y0,x1,y1}] (many per page)
+   *        - place    -> reads selection.marks : [{page,label,x,y}|{page,label,x0,y0,x1,y1}]
+   *                      and writes selection.pending : {page,x,y,box|null}, then calls
+   *                      selection._onPlace(pending). Click = a point, drag = a box.
    */
   function renderThumbnails(container, thumbs, mode, selection) {
     container.innerHTML = "";
@@ -335,6 +338,8 @@
         attachDrawLayer(div, t, selection, false);
       } else if (mode === "redact") {
         attachDrawLayer(div, t, selection, true);
+      } else if (mode === "place") {
+        attachPlaceLayer(div, t, selection);
       }
     });
   }
@@ -383,24 +388,112 @@
     paint();
   }
 
+  /* ----- place: pick WHERE an edit goes, and see what's already there ----- */
+  /**
+   * Click a page -> a point; drag -> a rectangle. Either way the result lands in
+   * `selection.pending` and `selection._onPlace` fires, so the caller can pre-fill
+   * its form instead of making the user guess 0..1 coordinates. Marks already in
+   * `selection.marks` are drawn so previous edits are visible on the page.
+   */
+  function attachPlaceLayer(thumbDiv, thumb, selection) {
+    var layer = document.createElement("div");
+    layer.className = "draw-layer place-layer";
+    thumbDiv.appendChild(layer);
+
+    function frac(v) { return Math.min(1, Math.max(0, v)); }
+    function at(e) {
+      var r = layer.getBoundingClientRect();
+      return { x: frac((e.clientX - r.left) / r.width), y: frac((e.clientY - r.top) / r.height) };
+    }
+    function drawMark(m, cls) {
+      var el = document.createElement("div");
+      var isBox = m.x1 != null;
+      // A text item with a known point size is drawn to scale so its footprint
+      // on the page is visible; anything else stays a dot/box locator.
+      var isText = !isBox && m.text != null && String(m.text).length > 0 &&
+                   isFinite(m.fontSize) && thumb.height > 0;
+      el.className = "place-mark " + cls +
+        (isBox ? " box" : (isText ? " text-preview" : " point"));
+      if (isBox) {
+        el.style.left = (m.x0 * 100) + "%";
+        el.style.top = (m.y0 * 100) + "%";
+        el.style.width = ((m.x1 - m.x0) * 100) + "%";
+        el.style.height = ((m.y1 - m.y0) * 100) + "%";
+      } else if (isText) {
+        // Font size is in PDF points; the preview is 72-dpi, so thumb.height (px)
+        // equals the page height in points. cqh keeps the glyphs to scale as the
+        // preview resizes. Baseline sits at (x, y), matching PyMuPDF insert_text.
+        el.style.left = (m.x * 100) + "%";
+        el.style.top = (m.y * 100) + "%";
+        el.style.fontSize = (m.fontSize / thumb.height * 100) + "cqh";
+        el.textContent = String(m.text);
+        if (m.color) el.style.color = m.color;
+        if (m.bold) el.style.fontWeight = "700";
+        if (m.italic) el.style.fontStyle = "italic";
+      } else {
+        el.style.left = (m.x * 100) + "%";
+        el.style.top = (m.y * 100) + "%";
+      }
+      if (m.label && !isText) el.setAttribute("data-label", m.label);
+      layer.appendChild(el);
+      return el;
+    }
+
+    // Edits already added to this page, then the spot awaiting a choice.
+    (selection.marks || []).filter(function (m) { return m.page === thumb.page; })
+      .forEach(function (m) { drawMark(m, "mark"); });
+    var pend = selection.pending;
+    if (pend && pend.page === thumb.page) drawMark(pend.box || pend, "pending");
+
+    var start = null, ghost = null;
+    layer.addEventListener("mousedown", function (e) { e.preventDefault(); start = at(e); });
+    layer.addEventListener("mousemove", function (e) {
+      if (!start) return;
+      var c = at(e);
+      if (!ghost) ghost = drawMark({ x0: 0, y0: 0, x1: 0, y1: 0 }, "pending");
+      ghost.style.left = (Math.min(start.x, c.x) * 100) + "%";
+      ghost.style.top = (Math.min(start.y, c.y) * 100) + "%";
+      ghost.style.width = (Math.abs(c.x - start.x) * 100) + "%";
+      ghost.style.height = (Math.abs(c.y - start.y) * 100) + "%";
+    });
+    var finish = function (e) {
+      if (!start) return;
+      var s = start, c = at(e);
+      start = null;
+      if (ghost) { ghost.remove(); ghost = null; }
+      // A real drag becomes a box; anything tiny is treated as a click (a point).
+      var box = null;
+      if (Math.abs(c.x - s.x) > 0.02 && Math.abs(c.y - s.y) > 0.02) {
+        box = {
+          x0: +Math.min(s.x, c.x).toFixed(4), y0: +Math.min(s.y, c.y).toFixed(4),
+          x1: +Math.max(s.x, c.x).toFixed(4), y1: +Math.max(s.y, c.y).toFixed(4),
+        };
+      }
+      selection.pending = {
+        page: thumb.page,
+        x: box ? box.x0 : +s.x.toFixed(4),
+        y: box ? box.y0 : +s.y.toFixed(4),
+        box: box,
+      };
+      if (selection._onPlace) selection._onPlace(selection.pending);
+    };
+    layer.addEventListener("mouseup", finish);
+    layer.addEventListener("mouseleave", function (e) { if (start) finish(e); });
+  }
+
   /* ----- crop/redact: draw normalized boxes over a thumbnail ------------- */
   function attachDrawLayer(thumbDiv, thumb, selection, isRedact) {
     var layer = document.createElement("div");
     layer.className = "draw-layer";
     thumbDiv.appendChild(layer);
 
-    // Redraw any existing boxes for this page (redact only; crop is single global box).
+    // Redraw this page's boxes. Both modes are per-page: redact keeps MANY boxes
+    // per page, crop keeps at most ONE (its own crop rectangle).
     function repaint() {
       layer.querySelectorAll(".draw-box").forEach(function (b) { b.remove(); });
-      if (isRedact) {
-        (selection.redactBoxes || []).filter(function (b) { return b.page === thumb.page; })
-          .forEach(function (b) { drawBox(b, true); });
-      } else if (selection.cropBox && selection.cropPages && selection.cropPages.indexOf(thumb.page) >= 0) {
-        drawBox(selection.cropBox, false);
-      } else if (selection.cropBox && !selection.cropPages) {
-        // crop applies to all pages -> show on every thumb
-        drawBox(selection.cropBox, false);
-      }
+      var boxes = (isRedact ? selection.redactBoxes : selection.cropBoxes) || [];
+      boxes.filter(function (b) { return b.page === thumb.page; })
+        .forEach(function (b) { drawBox(b, isRedact); });
     }
     function drawBox(b, redact) {
       var el = document.createElement("div");
@@ -412,11 +505,17 @@
       layer.appendChild(el);
     }
 
+    // Fractions must stay inside 0..1 — the backend rejects anything outside it.
+    // The START point needs clamping just like the move/end points: a drag begun on
+    // the page edge (or a pixel outside the layer) otherwise yields a negative x0/y0
+    // and the request 400s.
+    function frac(v) { return Math.min(1, Math.max(0, v)); }
+
     var start = null, ghost = null;
     layer.addEventListener("mousedown", function (e) {
       e.preventDefault();
       var r = layer.getBoundingClientRect();
-      start = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+      start = { x: frac((e.clientX - r.left) / r.width), y: frac((e.clientY - r.top) / r.height) };
       ghost = document.createElement("div");
       ghost.className = "draw-box" + (isRedact ? " redact" : "");
       layer.appendChild(ghost);
@@ -424,8 +523,8 @@
     layer.addEventListener("mousemove", function (e) {
       if (!start) return;
       var r = layer.getBoundingClientRect();
-      var cx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-      var cy = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+      var cx = frac((e.clientX - r.left) / r.width);
+      var cy = frac((e.clientY - r.top) / r.height);
       var x0 = Math.min(start.x, cx), y0 = Math.min(start.y, cy);
       ghost.style.left = (x0 * 100) + "%";
       ghost.style.top = (y0 * 100) + "%";
@@ -435,8 +534,8 @@
     var finish = function (e) {
       if (!start) return;
       var r = layer.getBoundingClientRect();
-      var cx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
-      var cy = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+      var cx = frac((e.clientX - r.left) / r.width);
+      var cy = frac((e.clientY - r.top) / r.height);
       var box = {
         x0: +Math.min(start.x, cx).toFixed(4), y0: +Math.min(start.y, cy).toFixed(4),
         x1: +Math.max(start.x, cx).toFixed(4), y1: +Math.max(start.y, cy).toFixed(4),
@@ -448,7 +547,10 @@
         selection.redactBoxes = selection.redactBoxes || [];
         selection.redactBoxes.push({ page: thumb.page, x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1 });
       } else {
-        selection.cropBox = box; // single crop box (applied to chosen / all pages)
+        // One crop box PER PAGE: drawing again on a page replaces that page's box.
+        selection.cropBoxes = (selection.cropBoxes || [])
+          .filter(function (b) { return b.page !== thumb.page; });
+        selection.cropBoxes.push({ page: thumb.page, x0: box.x0, y0: box.y0, x1: box.x1, y1: box.y1 });
       }
       repaint();
       if (selection._onDraw) selection._onDraw();
@@ -456,11 +558,10 @@
     layer.addEventListener("mouseup", finish);
     layer.addEventListener("mouseleave", function (e) { if (start) finish(e); });
 
-    // double-click clears boxes on this page (redact) or the crop box
+    // double-click clears this page's boxes only (both modes)
     layer.addEventListener("dblclick", function () {
-      if (isRedact) {
-        selection.redactBoxes = (selection.redactBoxes || []).filter(function (b) { return b.page !== thumb.page; });
-      } else { selection.cropBox = null; }
+      var key = isRedact ? "redactBoxes" : "cropBoxes";
+      selection[key] = (selection[key] || []).filter(function (b) { return b.page !== thumb.page; });
       repaint();
       if (selection._onDraw) selection._onDraw();
     });

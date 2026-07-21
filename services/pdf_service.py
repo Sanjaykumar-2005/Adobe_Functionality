@@ -129,6 +129,52 @@ def _validate_pages(pages: Iterable[int] | None, total: int) -> list[int]:
     return seen
 
 
+def _pages_from_spec(spec, page, total: int) -> list[int]:
+    """Resolve the target pages (1-based) for a single edit/field.
+
+    *spec* is the optional ``pages`` value: ``"all"``/``"*"`` for every page, a
+    range string like ``"1,3,5-8"``, or a list of ints. When *spec* is empty the
+    single *page* is used instead. Raises :class:`ValueError` on an out-of-range
+    or malformed value.
+    """
+    if spec is None or spec == "" or spec == []:
+        if page is None:
+            raise ValueError("Each edit needs a 'page' (or 'pages').")
+        pi = int(page)
+        if pi < 1 or pi > total:
+            raise ValueError(f"Page {pi} out of range (document has {total} pages).")
+        return [pi]
+    if isinstance(spec, str):
+        if spec.strip().lower() in ("all", "*"):
+            return list(range(1, total + 1))
+        idxs = [i for group in _parse_ranges(spec, total) for i in group]
+    else:  # assume an iterable of page numbers
+        idxs = _validate_pages(spec, total)
+    seen: list[int] = []
+    for i in idxs:
+        if i not in seen:
+            seen.append(i)
+    return [i + 1 for i in seen]
+
+
+def _expand_page_items(items: list[dict], total: int) -> list[dict]:
+    """Expand edits/fields that carry a multi-page ``pages`` spec into one copy
+    per target page.
+
+    Each returned dict has a single 1-based ``page`` and no ``pages`` key, so the
+    downstream apply logic stays single-page. Order is preserved.
+    """
+    out: list[dict] = []
+    for item in items:
+        pages = _pages_from_spec(item.get("pages"), item.get("page"), total)
+        for p in pages:
+            copy = dict(item)
+            copy.pop("pages", None)
+            copy["page"] = p
+            out.append(copy)
+    return out
+
+
 def _subset_doc(src: "fitz.Document", indices: Sequence[int]) -> "fitz.Document":
     """Build a new in-memory document from *src* containing only *indices*.
 
@@ -342,8 +388,8 @@ def delete_pages(path: str, job_id: str, pages: list[int]) -> list[str]:
     return [dest]
 
 
-def crop(path: str, job_id: str, box: dict, pages: list[int] | None = None) -> list[str]:
-    """Crop pages to a normalized *box* ``{x0,y0,x1,y1}`` (0..1 of each page rect)."""
+def _normalized_box(box: dict) -> tuple[float, float, float, float]:
+    """Validate a ``{x0,y0,x1,y1}`` box of 0..1 fractions -> a coords tuple."""
     try:
         x0, y0, x1, y1 = (float(box["x0"]), float(box["y0"]),
                           float(box["x1"]), float(box["y1"]))
@@ -351,16 +397,61 @@ def crop(path: str, job_id: str, box: dict, pages: list[int] | None = None) -> l
         raise ValueError("box must contain numeric x0, y0, x1, y1.")
     if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
         raise ValueError("box coords must satisfy 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1.")
+    return x0, y0, x1, y1
+
+
+def _apply_cropbox(page: "fitz.Page", coords: tuple[float, float, float, float]) -> None:
+    """Set *page*'s cropbox from 0..1 fractions of its own rect."""
+    x0, y0, x1, y1 = coords
+    r = page.rect
+    page.set_cropbox(fitz.Rect(
+        r.x0 + x0 * r.width, r.y0 + y0 * r.height,
+        r.x0 + x1 * r.width, r.y0 + y1 * r.height,
+    ))
+
+
+def crop(path: str, job_id: str, box: dict | None = None,
+         pages: list[int] | None = None,
+         boxes: list[dict] | None = None) -> list[str]:
+    """Crop pages to normalized boxes (0..1 fractions of each page's own rect).
+
+    Two modes:
+
+    * *boxes* — PER PAGE: ``[{"page": 1, "x0":…, "y0":…, "x1":…, "y1":…}, …]``.
+      Every listed page is cropped to ITS OWN box; pages not listed are left
+      untouched. A page listed twice keeps the last box. This is what the UI sends.
+    * *box* (+ optional *pages*) — ONE box reused on every chosen page (all pages
+      when *pages* is None). The original API, kept for JSON/older callers.
+
+    Note ``set_cropbox`` only changes what is DISPLAYED — the content outside the
+    box stays in the file. Use :func:`redact` to actually destroy content.
+    """
+    if boxes:
+        with fitz.open(path) as doc:
+            # Resolve to page -> coords first so a bad entry raises before any edit.
+            per_page: dict[int, tuple[float, float, float, float]] = {}
+            for entry in boxes:
+                try:
+                    num = int(entry["page"])
+                except (KeyError, TypeError, ValueError):
+                    raise ValueError("each entry in `boxes` needs a numeric `page`.")
+                if not 1 <= num <= doc.page_count:
+                    raise ValueError(
+                        f"page {num} is out of range (1-{doc.page_count}).")
+                per_page[num] = _normalized_box(entry)
+            for num, coords in per_page.items():
+                _apply_cropbox(doc[num - 1], coords)
+            dest = _out(job_id, path, "_cropped")
+            doc.save(dest, deflate=True, garbage=4)
+        return [dest]
+
+    if not box:
+        raise ValueError("either `boxes` (one per page) or `box` is required.")
+    coords = _normalized_box(box)
     with fitz.open(path) as doc:
         indices = _validate_pages(pages, doc.page_count)
         for idx in indices:
-            page = doc[idx]
-            r = page.rect
-            new_rect = fitz.Rect(
-                r.x0 + x0 * r.width, r.y0 + y0 * r.height,
-                r.x0 + x1 * r.width, r.y0 + y1 * r.height,
-            )
-            page.set_cropbox(new_rect)
+            _apply_cropbox(doc[idx], coords)
         dest = _out(job_id, path, "_cropped")
         doc.save(dest, deflate=True, garbage=4)
     return [dest]
@@ -406,23 +497,16 @@ def _recompress_image(doc: "fitz.Document", page: "fitz.Page", xref: int,
     page.replace_image(xref, stream=new_bytes)
 
 
-def compress(path: str, job_id: str, level: str = "medium") -> list[str]:
-    """Shrink a PDF by re-encoding images and deflating/garbage-collecting.
+def _compress_pass(src: str, dest: str, dpi: int | None = None,
+                   quality: int | None = None) -> int:
+    """Re-encode every image at *dpi*/*quality*, save to *dest*, return its size.
 
-    *level* selects a preset from ``Config.COMPRESSION_LEVELS`` (low/medium/high).
-    If per-image re-encoding fails (or Pillow is missing) the function still
-    produces a deflated, garbage-collected PDF.
+    ``dpi=None`` re-encodes NOTHING — deflate + garbage-collect only, i.e. a
+    lossless squeeze. Target mode tries that first so a target the file can
+    already meet costs no image quality at all.
     """
-    preset = Config.COMPRESSION_LEVELS.get(level)
-    if preset is None:
-        raise ValueError(
-            f"Unknown compression level '{level}'. "
-            f"Choose from: {', '.join(Config.COMPRESSION_LEVELS)}."
-        )
-    dpi, quality = preset["dpi"], preset["quality"]
-
-    with fitz.open(path) as doc:
-        if _PIL_OK:
+    with fitz.open(src) as doc:
+        if _PIL_OK and dpi is not None:
             for pno in range(doc.page_count):
                 page = doc[pno]
                 seen: set[int] = set()
@@ -435,9 +519,113 @@ def compress(path: str, job_id: str, level: str = "medium") -> list[str]:
                         _recompress_image(doc, page, xref, dpi, quality)
                     except Exception:
                         continue  # leave this image untouched, keep going
-        dest = _out(job_id, path, "_compressed")
         doc.save(dest, deflate=True, deflate_images=True, deflate_fonts=True,
                  garbage=4, clean=True)
+    return os.path.getsize(dest)
+
+
+def compress(path: str, job_id: str, level: str = "medium",
+             target_bytes: int | None = None,
+             report: dict | None = None) -> list[str]:
+    """Shrink a PDF by re-encoding images and deflating/garbage-collecting.
+
+    Two modes:
+
+    * *level* — a preset from ``Config.COMPRESSION_LEVELS`` (low/medium/high).
+      One pass, predictable quality, whatever size comes out.
+    * *target_bytes* — aim for a file SIZE. Tries a LOSSLESS squeeze first (so a
+      target the file can already meet costs no image quality), then
+      binary-searches ``Config.COMPRESSION_TARGET_STEPS`` for the GENTLEST step
+      whose output still fits — the best quality that meets the target, in ~5
+      passes rather than one per step. *level* is ignored in this mode.
+
+    A target is BEST-EFFORT and can be physically unreachable: only images are
+    re-encoded, so a text-only PDF has a floor set by its text/fonts and metadata.
+    When nothing fits, the smallest attempt is returned instead of raising — pass
+    a *report* dict to see what happened; it is filled with ``target_bytes``,
+    ``original_bytes``, ``achieved_bytes``, ``met`` (bool), ``dpi``, ``quality``
+    and ``passes``.
+
+    If per-image re-encoding fails (or Pillow is missing) this still produces a
+    deflated, garbage-collected PDF.
+    """
+    dest = _out(job_id, path, "_compressed")
+
+    # ---- level mode (unchanged behaviour) --------------------------------- #
+    if target_bytes is None:
+        preset = Config.COMPRESSION_LEVELS.get(level)
+        if preset is None:
+            raise ValueError(
+                f"Unknown compression level '{level}'. "
+                f"Choose from: {', '.join(Config.COMPRESSION_LEVELS)}."
+            )
+        _compress_pass(path, dest, preset["dpi"], preset["quality"])
+        return [dest]
+
+    # ---- target-size mode ------------------------------------------------- #
+    if target_bytes <= 0:
+        raise ValueError("Target size must be greater than zero.")
+
+    steps = Config.COMPRESSION_TARGET_STEPS
+    tmp = dest + ".try"
+    lo, hi, passes = 0, len(steps) - 1, 0
+    fit_size: int | None = None        # best-quality size that MEETS the target
+    fallback_size: int | None = None   # smallest seen, used when nothing fits
+    chosen: dict | None = None         # the step in `dest`; None = the lossless pass
+
+    try:
+        # Lossless first: if deflate + garbage-collection alone already fits, the
+        # user gets their size with ZERO image quality lost. Never re-encode a
+        # file that was going to meet the target anyway.
+        size = _compress_pass(path, dest, None, None)
+        passes += 1
+        if size <= target_bytes:
+            if report is not None:
+                report.update({
+                    "target_bytes": target_bytes,
+                    "original_bytes": os.path.getsize(path),
+                    "achieved_bytes": size,
+                    "met": True,
+                    "lossless": True,
+                    "dpi": None,
+                    "quality": None,
+                    "passes": passes,
+                })
+            return [dest]
+        fallback_size = size  # a floor to beat; dest already holds it
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            step = steps[mid]
+            size = _compress_pass(path, tmp, step["dpi"], step["quality"])
+            passes += 1
+            if size <= target_bytes:
+                # Fits. Keep it, then look left for something gentler that also fits.
+                fit_size, chosen = size, step
+                os.replace(tmp, dest)
+                hi = mid - 1
+            else:
+                # Too big. Only worth keeping if nothing has fitted yet — never
+                # let an over-target attempt clobber a good one already saved.
+                if fit_size is None and (fallback_size is None or size < fallback_size):
+                    fallback_size, chosen = size, step
+                    os.replace(tmp, dest)
+                lo = mid + 1
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+    if report is not None:
+        report.update({
+            "target_bytes": target_bytes,
+            "original_bytes": os.path.getsize(path),
+            "achieved_bytes": fit_size if fit_size is not None else fallback_size,
+            "met": fit_size is not None,
+            "lossless": chosen is None,
+            "dpi": chosen["dpi"] if chosen else None,
+            "quality": chosen["quality"] if chosen else None,
+            "passes": passes,
+        })
     return [dest]
 
 
@@ -740,6 +928,7 @@ def edit_text(path: str, job_id: str, edits: list[dict]) -> list[str]:
     if not edits:
         raise ValueError("No edits provided.")
     with fitz.open(path) as doc:
+        edits = _expand_page_items(edits, doc.page_count)
         _apply_edits(doc, edits)
         dest = _out(job_id, path, "_edited")
         doc.save(dest, deflate=True, garbage=4)
@@ -765,6 +954,10 @@ def fill_sign(path: str, job_id: str, fields: list[dict],
     if not fields:
         raise ValueError("No fields provided.")
     image_map = image_map or {}
+    with fitz.open(path) as doc:
+        # A field may target several pages via a "pages" spec; fan it out to one
+        # field per page before building the low-level edits.
+        fields = _expand_page_items(fields, doc.page_count)
     edits: list[dict] = []
     for f in fields:
         ftype = f.get("type")

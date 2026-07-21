@@ -66,3 +66,36 @@ class Config:
         "medium": {"dpi": 110, "quality": 65},
         "high":   {"dpi": 72,  "quality": 45},  # smallest file
     }
+
+    # Ladder used when compressing to a TARGET SIZE, ordered best-quality first.
+    # pdf_service.compress binary-searches it for the gentlest step that still
+    # fits, so keep it sorted by DECREASING output size.
+    #
+    # Keep the steps CLOSE together: the search returns the first step that fits,
+    # so a coarse ladder overshoots and throws away quality the user asked to keep
+    # (a 96dpi->72dpi jump once turned a 300 KB target into a 93 KB file). The
+    # search is binary, so doubling the rungs costs ~1 extra pass, not double.
+    COMPRESSION_TARGET_STEPS = [
+        {"dpi": 220, "quality": 92},
+        {"dpi": 200, "quality": 90},
+        {"dpi": 180, "quality": 87},
+        {"dpi": 165, "quality": 85},
+        {"dpi": 150, "quality": 82},
+        {"dpi": 140, "quality": 78},
+        {"dpi": 130, "quality": 75},
+        {"dpi": 120, "quality": 72},
+        {"dpi": 110, "quality": 68},
+        {"dpi": 100, "quality": 65},
+        {"dpi": 96,  "quality": 60},
+        {"dpi": 88,  "quality": 55},
+        {"dpi": 80,  "quality": 50},
+        {"dpi": 72,  "quality": 45},
+        {"dpi": 66,  "quality": 40},
+        {"dpi": 60,  "quality": 36},
+        {"dpi": 54,  "quality": 32},
+        {"dpi": 48,  "quality": 28},
+        {"dpi": 42,  "quality": 24},
+        {"dpi": 36,  "quality": 20},
+        {"dpi": 30,  "quality": 16},
+        {"dpi": 24,  "quality": 12},  # last resort, visibly degraded
+    ]

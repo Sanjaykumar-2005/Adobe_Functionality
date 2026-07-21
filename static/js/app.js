@@ -59,7 +59,7 @@
     },
     {
       id: "image-to-pdf", name: "Image → PDF", category: "Convert", icon: "🖼️",
-      desc: "Combine images into a PDF. Drag the thumbnails to set each image's page order.",
+      desc: "Combine images into a PDF. Drag the previews to set each image's page order.",
       multi: true, accept: ACCEPT_IMG, fileField: "files", reorderable: true,
       endpoint: "/api/convert/image-to-pdf",
       options: [
@@ -73,32 +73,15 @@
     },
     {
       id: "pdf-to-word", name: "PDF → Word", category: "Convert", icon: "📃",
-      desc: "Convert text-based PDFs into Word (.docx). Auto mode picks the best " +
-            "engine per file: documents with data tables or white-on-dark text go " +
-            "to the editable engine (which extracts tables and keeps that text " +
-            "readable); everything else uses the faithful office import that keeps " +
-            "backgrounds, borders and shading. You can also force a mode. Scanned " +
-            "PDFs need OCR first.",
+      desc: "Convert text-based PDFs into Word (.docx). The best engine is picked " +
+            "automatically for each file: documents with data tables or white-on-dark " +
+            "text are rebuilt as editable text (extracting the tables and keeping that " +
+            "text readable); everything else uses the faithful office import that keeps " +
+            "backgrounds, borders and shading. Scanned PDFs need OCR first.",
       multi: true, accept: ACCEPT_PDF, fileField: "files",
       endpoint: "/api/convert/pdf-to-word",
-      options: [
-        { name: "mode", label: "Conversion mode", type: "select", default: "auto",
-          choices: [
-            { value: "auto", label: "Auto — pick the best engine per document (recommended)" },
-            { value: "faithful", label: "Faithful layout (keeps backgrounds/borders; text in frames)" },
-            { value: "editable", label: "Editable text (flowing paragraphs; extracts tables; keeps dark-background text)" },
-          ],
-          hint: "Auto routes table-heavy or dark-background documents to the editable " +
-                "engine (faithful office import mangles tables and hides white-on-dark " +
-                "text). Force Faithful only when you need the exact visual layout." },
-        { name: "remove_borders", label: "Remove table borders (tables that were " +
-          "borderless in the original gain gridlines during PDF conversion)",
-          type: "checkbox", default: false },
-      ],
-      build: function (fd, o) {
-        fd.append("mode", o.mode);
-        fd.append("remove_borders", o.remove_borders ? "true" : "false");
-      },
+      options: [],
+      build: function () {},
     },
 
     /* ---------------------------- ORGANIZE ---------------------------- */
@@ -116,28 +99,34 @@
     },
     {
       id: "split", name: "Split", category: "Organize", icon: "✂️",
-      desc: "Split a PDF by single pages, ranges, every N pages, or a custom selection.",
+      desc: "Split one PDF into several. Choose how to split below, then type the page numbers.",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
-      endpoint: "/api/organize/split", pageMode: "select",
-      pageHint: "For the “Custom pages” mode, click thumbnails to choose pages (or type them below).",
+      endpoint: "/api/organize/split",
       options: [
         {
-          name: "mode", label: "Split mode", type: "select", default: "pages",
+          name: "mode", label: "How do you want to split it?", type: "select", default: "pages",
           choices: [
-            { value: "pages", label: "One PDF per page" },
-            { value: "ranges", label: "By ranges (e.g. 1-3,5,8-10)" },
-            { value: "every_n", label: "Every N pages" },
-            { value: "custom", label: "Custom pages → single PDF" },
+            { value: "pages", label: "Every page separately — one PDF per page" },
+            { value: "ranges", label: "By page ranges — one PDF per range" },
+            { value: "every_n", label: "Into equal chunks — one PDF every N pages" },
+            { value: "custom", label: "Pick pages — one PDF holding just those pages" },
           ],
+          hint: "A 10-page PDF gives: 10 files (every page) · one file per range · 5 files of 2 pages (chunks of 2) · 1 file (pick pages).",
         },
-        { name: "ranges", label: "Ranges", type: "text", placeholder: "1-3,5,8-10", default: "", visibleIf: function (v) { return v.mode === "ranges"; } },
-        { name: "n", label: "Pages per chunk (N)", type: "number", min: 1, default: 2, visibleIf: function (v) { return v.mode === "every_n"; } },
-        { name: "pages", label: "Pages", type: "text", placeholder: "1,3,5", default: "", hint: "Used for Custom mode (or click thumbnails).", visibleIf: function (v) { return v.mode === "custom"; } },
+        { name: "ranges", label: "Page ranges", type: "text", placeholder: "1-3,5,8-10", default: "",
+          hint: "One PDF per range, separated by commas. “1-3,5,8-10” makes 3 files: pages 1–3, page 5, pages 8–10.",
+          visibleIf: function (v) { return v.mode === "ranges"; } },
+        { name: "n", label: "Pages per file", type: "number", min: 1, default: 2,
+          hint: "2 means every 2 pages become one file — a 10-page PDF gives 5 files.",
+          visibleIf: function (v) { return v.mode === "every_n"; } },
+        { name: "pages", label: "Page numbers to keep", type: "text", placeholder: "1,3,5", default: "",
+          hint: "Separate with commas. “1,3,5” makes a single PDF containing pages 1, 3 and 5.",
+          visibleIf: function (v) { return v.mode === "custom"; } },
       ],
       validate: function (ws, o) {
-        if (o.mode === "ranges" && !o.ranges.trim()) return "Enter at least one range.";
-        if (o.mode === "every_n" && (!o.n || o.n < 1)) return "N must be at least 1.";
-        if (o.mode === "custom" && !pagesString(ws, o)) return "Select or type the pages to extract.";
+        if (o.mode === "ranges" && !o.ranges.trim()) return "Type at least one page range, e.g. 1-3.";
+        if (o.mode === "every_n" && (!o.n || o.n < 1)) return "Pages per file must be at least 1.";
+        if (o.mode === "custom" && !pagesString(ws, o)) return "Type the page numbers to keep, e.g. 1,3,5.";
         return null;
       },
       build: function (fd, o, ws) {
@@ -149,16 +138,17 @@
     },
     {
       id: "rotate", name: "Rotate", category: "Organize", icon: "🔄",
-      desc: "Rotate pages. Select specific pages, or leave none selected to rotate all.",
+      desc: "Turn pages sideways or upside down. Choose the angle, then pick which pages — or leave the pages empty to rotate the whole document.",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
       endpoint: "/api/organize/rotate", pageMode: "select",
-      pageHint: "Click thumbnails to rotate only those pages. Select none to rotate every page.",
+      pageHint: "Leave this empty to rotate EVERY page. To rotate only some, either type their numbers or load the previews and click them.",
       options: [
         {
-          name: "rotation", label: "Rotation", type: "select", default: "90",
-          choices: [{ value: "90", label: "90° clockwise" }, { value: "180", label: "180°" }, { value: "270", label: "270° (90° ccw)" }],
+          name: "rotation", label: "Rotate by", type: "select", default: "90",
+          choices: [{ value: "90", label: "90° clockwise" }, { value: "180", label: "180° (upside down)" }, { value: "270", label: "270° (90° anti-clockwise)" }],
         },
-        { name: "pages", label: "Pages (optional)", type: "text", placeholder: "1,3,5 — overrides selection", default: "" },
+        { name: "pages", label: "Which pages?", type: "text", placeholder: "1,3,5", default: "",
+          hint: "Type page numbers separated by commas, or click them in the previews below. If you do both, what you type wins." },
       ],
       build: function (fd, o, ws) {
         fd.append("rotation", o.rotation);
@@ -168,13 +158,13 @@
     },
     {
       id: "rearrange", name: "Rearrange", category: "Organize", icon: "↕️",
-      desc: "Drag page thumbnails to reorder the document.",
+      desc: "Drag the page previews to reorder the document.",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
       endpoint: "/api/organize/rearrange", pageMode: "rearrange", autoPreview: true,
-      pageHint: "Drag thumbnails to set the new page order, then Run.",
+      pageHint: "Drag the page previews to set the new page order, then Run.",
       options: [],
       validate: function (ws) {
-        if (!ws.thumbs.length) return "Load the page thumbnails first.";
+        if (!ws.thumbs.length) return "Load the page previews first.";
         if (!ws.selection.order || ws.selection.order.length !== ws.thumbs.length) return "Reorder the pages first.";
         return null;
       },
@@ -185,8 +175,9 @@
       desc: "Pull selected pages into a new PDF (original untouched).",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
       endpoint: "/api/organize/extract", pageMode: "select", autoPreview: true,
-      pageHint: "Click the pages you want to extract (or type them below).",
-      options: [{ name: "pages", label: "Pages (optional)", type: "text", placeholder: "1,3,5", default: "" }],
+      pageHint: "Choose the pages to pull out into the new PDF.",
+      options: [{ name: "pages", label: "Which pages?", type: "text", placeholder: "1,3,5", default: "",
+        hint: "Type page numbers separated by commas, or click them in the previews below. If you do both, what you type wins." }],
       validate: function (ws, o) { return pagesString(ws, o) ? null : "Select at least one page."; },
       build: function (fd, o, ws) { fd.append("pages", pagesString(ws, o)); },
     },
@@ -195,51 +186,95 @@
       desc: "Remove selected pages and download the rest.",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
       endpoint: "/api/organize/delete", pageMode: "select", autoPreview: true,
-      pageHint: "Click the pages you want to delete (or type them below).",
-      options: [{ name: "pages", label: "Pages (optional)", type: "text", placeholder: "2,4", default: "" }],
+      pageHint: "Choose the pages to remove — everything else is kept.",
+      options: [{ name: "pages", label: "Which pages?", type: "text", placeholder: "2,4", default: "",
+        hint: "Type page numbers separated by commas, or click them in the previews below. If you do both, what you type wins." }],
       validate: function (ws, o) { return pagesString(ws, o) ? null : "Select at least one page to delete."; },
       build: function (fd, o, ws) { fd.append("pages", pagesString(ws, o)); },
     },
     {
       id: "crop", name: "Crop", category: "Organize", icon: "⛶",
-      desc: "Draw a crop rectangle on a page; it applies to all pages (or those you type).",
+      desc: "Trim the edges off pages, like cropping a photo. Drag on a page to draw the part you want to KEEP — each page can have its own box. ⚠ Cropping only hides the edges; the content stays in the file. Use Redact to remove sensitive text for good.",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
       endpoint: "/api/organize/crop", pageMode: "crop", autoPreview: true,
-      pageHint: "Drag on a page preview to draw the crop box. Double-click to clear it.",
-      options: [{ name: "pages", label: "Apply to pages (optional)", type: "text", placeholder: "blank = all pages", default: "" }],
-      validate: function (ws) { return ws.selection.cropBox ? null : "Draw a crop rectangle on a page first."; },
+      pageHint: "Drag on a page to draw the area to keep. Every page keeps its OWN box, so you can crop each page differently — pages you don't draw on are left untouched. Drawing again on a page replaces that page's box; double-click a page to clear it.",
+      options: [],
+      validate: function (ws) {
+        return (ws.selection.cropBoxes || []).length
+          ? null : "Draw a crop box on at least one page first.";
+      },
       build: function (fd, o, ws) {
-        fd.append("box", JSON.stringify(ws.selection.cropBox));
-        if (o.pages.trim()) fd.append("pages", o.pages.trim());
+        fd.append("boxes", JSON.stringify(ws.selection.cropBoxes));
       },
     },
     {
       id: "compress", name: "Compress", category: "Organize", icon: "🗜️",
-      desc: "Reduce PDF file size by downsampling images.",
+      desc: "Make the PDF smaller by shrinking the images inside it. Either pick how hard to squeeze, or name the file size you want.",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
       endpoint: "/api/organize/compress",
-      options: [{
-        name: "level", label: "Compression level", type: "select", default: "medium",
-        choices: [{ value: "low", label: "Low (best quality)" }, { value: "medium", label: "Medium" }, { value: "high", label: "High (smallest)" }],
-      }],
-      build: function (fd, o) { fd.append("level", o.level); },
+      options: [
+        {
+          name: "mode", label: "How much should it shrink?", type: "select", default: "level",
+          choices: [
+            { value: "level", label: "By quality — choose how hard to squeeze" },
+            { value: "target", label: "To a size — aim for a file size you pick" },
+          ],
+        },
+        {
+          name: "level", label: "Quality", type: "select", default: "medium",
+          choices: [
+            { value: "low", label: "Low squeeze — best quality, largest file" },
+            { value: "medium", label: "Medium — balanced" },
+            { value: "high", label: "High squeeze — smallest file, lowest quality" },
+          ],
+          visibleIf: function (v) { return v.mode === "level"; },
+        },
+        {
+          name: "target_size", label: "Target size", type: "number", min: 0.1, step: 0.1, default: 2,
+          hint: "Best effort: the quality is squeezed only as far as needed to fit. Only images can shrink, so a text-heavy PDF has a floor — if the target can't be reached you'll get the smallest possible file plus a note.",
+          visibleIf: function (v) { return v.mode === "target"; },
+        },
+        {
+          name: "target_unit", label: "Size unit", type: "select", default: "MB",
+          choices: [{ value: "MB", label: "MB" }, { value: "KB", label: "KB" }],
+          visibleIf: function (v) { return v.mode === "target"; },
+        },
+      ],
+      validate: function (ws, o) {
+        if (o.mode === "target" && (!o.target_size || o.target_size <= 0)) {
+          return "Enter a target size greater than zero.";
+        }
+        return null;
+      },
+      build: function (fd, o) {
+        if (o.mode === "target") {
+          fd.append("target_size", String(o.target_size));
+          fd.append("target_unit", o.target_unit);
+        } else {
+          fd.append("level", o.level);
+        }
+      },
     },
 
     /* ------------------------------ EDIT ------------------------------ */
     {
       id: "edit", name: "Edit Text", category: "Edit", icon: "✏️",
-      desc: "Add text, insert images, or erase regions. Coordinates are 0..1 from the top-left.",
+      desc: "Add text, insert images, or erase parts of a page. Click the spot on the page preview where it should go — no coordinates to guess.",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
       endpoint: "/api/edit/text", custom: "edits",
+      pageMode: "place", autoPreview: true,
+      pageHint: "Click where you want something, or drag a rectangle for an image / erase area — then pick what to add below. In the form you can set “Apply to page(s)” to all or a list (e.g. 1,3,5-8) to repeat the same item on several pages. Items you've added show up as markers here.",
       options: [],
       validate: function (ws) { return (ws.entries && ws.entries.length) ? null : "Add at least one edit."; },
       build: function (fd, o, ws) { buildEntries(fd, ws); },
     },
     {
       id: "fill-sign", name: "Fill & Sign", category: "Edit", icon: "🖊️",
-      desc: "Add text fields, dates, checkboxes and signatures (typed or image).",
+      desc: "Add text, dates, checkboxes and signatures (typed or image). Click the spot on the page preview where each one goes.",
       multi: false, accept: ACCEPT_PDF, fileField: "file",
       endpoint: "/api/edit/fill-sign", custom: "fields",
+      pageMode: "place", autoPreview: true,
+      pageHint: "Click where the field goes, or drag a rectangle for an image signature — then pick what to add below. In the form you can set “Apply to page(s)” to all or a list (e.g. 1,3,5-8) to repeat the same field on several pages. Fields you've added show up as markers here.",
       options: [],
       validate: function (ws) { return (ws.entries && ws.entries.length) ? null : "Add at least one field."; },
       build: function (fd, o, ws) { buildEntries(fd, ws); },
@@ -354,7 +389,101 @@
   }
 
   function freshSelection() {
-    return { pages: new Set(), order: [], cropBox: null, redactBoxes: [] };
+    return { pages: new Set(), order: [], cropBoxes: [], redactBoxes: [],
+             marks: [], pending: null };
+  }
+
+  /* --- Place mode: entries <-> markers drawn on the page previews -------- */
+  function entryShortLabel(en) {
+    if (en.type === "checkbox") return "☑";
+    if (en.type === "delete_region") return "erase";
+    if (en.type === "add_image" || en.type === "signature_image") return "image";
+    var t = String(en.text || "");
+    if (!t) return "text";
+    return t.length > 14 ? t.slice(0, 14) + "…" : t;
+  }
+
+  // Expand a page spec ("2" | "all" | "1,3,5-8") to an array of 1-based page
+  // numbers, clamped to 1..total (total 0 = unknown, no upper clamp).
+  function resolvePages(spec, total) {
+    var s = String(spec == null ? "" : spec).trim().toLowerCase();
+    if (!s) return [];
+    if (s === "all" || s === "*") {
+      var a = []; for (var i = 1; i <= (total || 0); i++) a.push(i); return a;
+    }
+    var out = [];
+    s.split(",").forEach(function (tok) {
+      tok = tok.trim(); if (!tok) return;
+      if (tok.indexOf("-") >= 0) {
+        var parts = tok.split("-"), lo = parseInt(parts[0], 10), hi = parseInt(parts[1], 10);
+        if (isFinite(lo) && isFinite(hi)) {
+          if (lo > hi) { var t = lo; lo = hi; hi = t; }
+          for (var j = lo; j <= hi; j++) out.push(j);
+        }
+      } else {
+        var n = parseInt(tok, 10); if (isFinite(n)) out.push(n);
+      }
+    });
+    var seen = [];
+    out.forEach(function (n) {
+      if (n >= 1 && (!total || n <= total) && seen.indexOf(n) < 0) seen.push(n);
+    });
+    return seen;
+  }
+
+  // Every entry the user has added -> one marker per target page for
+  // UI.renderThumbnails("place"). An entry applied to several pages shows on each.
+  function marksFromEntries(ws) {
+    var total = ws.thumbs ? ws.thumbs.length : 0;
+    var marks = [];
+    (ws.entries || []).forEach(function (en) {
+      var pages = en.pages != null ? resolvePages(en.pages, total) : [];
+      if (!pages.length) pages = [Number(en.page) || 1];
+      pages.forEach(function (pg) {
+        var m = { page: pg, label: entryShortLabel(en) };
+        if (en.x1 != null) {
+          m.x0 = +en.x0; m.y0 = +en.y0; m.x1 = +en.x1; m.y1 = +en.y1;
+        } else {
+          m.x = +en.x; m.y = +en.y;
+          // Text items carry their string + point size so the preview can draw
+          // them to scale — you see exactly how much of the page they occupy.
+          var txt = en.type === "checkbox"
+            ? (en.checked === false ? "" : "X")
+            : String(en.text || "");
+          if (txt) {
+            m.text = txt;
+            m.fontSize = Number(en.font_size) || (en.type === "signature_text" ? 22 : 14);
+            if (en.color) m.color = en.color;
+            if (en.bold) m.bold = true;
+            if (en.italic) m.italic = true;
+          }
+        }
+        var ok = m.x1 != null ? isFinite(m.x0) && isFinite(m.y0) : isFinite(m.x) && isFinite(m.y);
+        if (ok) marks.push(m);
+      });
+    });
+    return marks;
+  }
+
+  // The clicked/dragged spot -> values to pre-fill an entry form with. Point specs
+  // take x/y; box specs take x0..y1, and a plain click anchors a default-sized box
+  // there (still editable in the form) so clicking alone is always enough.
+  function placementFor(spec, pending) {
+    if (!pending) return null;
+    var names = spec.fields.map(function (f) { return f.name; });
+    var p = {};
+    if (names.indexOf("pages") >= 0) p.pages = String(pending.page);
+    if (names.indexOf("page") >= 0) p.page = pending.page;
+    if (names.indexOf("x") >= 0) { p.x = pending.x; p.y = pending.y; }
+    if (names.indexOf("x0") >= 0) {
+      var b = pending.box || {
+        x0: pending.x, y0: pending.y,
+        x1: Math.min(1, pending.x + 0.3), y1: Math.min(1, pending.y + 0.15),
+      };
+      p.x0 = +b.x0.toFixed(4); p.y0 = +b.y0.toFixed(4);
+      p.x1 = +b.x1.toFixed(4); p.y1 = +b.y1.toFixed(4);
+    }
+    return p;
   }
 
   /* ------------------------- Field rendering -------------------------- */
@@ -476,7 +605,7 @@
     var upCard = document.createElement("div");
     upCard.className = "card";
     upCard.innerHTML =
-      "<h3>1. Upload</h3>" +
+      "<h3>Upload</h3>" +
       '<div class="dropzone"><div class="dz-icon">⬆️</div>' +
       '<div class="dz-main">Drag & drop ' + (tool.multi ? "files" : "a file") + " here</div>" +
       '<div class="dz-hint">or click to browse · accepts ' + tool.accept + "</div></div>" +
@@ -509,7 +638,7 @@
         };
         if (tool.reorderable) {
           if (rh) rh.textContent = ws.files.length
-            ? "Drag thumbnails to reorder — the first image becomes page 1."
+            ? "Drag the previews to reorder — the first image becomes page 1."
             : "";
           UI.renderImageReorder(reorderHost, ws.files, reorderCbs);
         } else {
@@ -536,38 +665,78 @@
       if (tool.autoPreview && ws.files.length) loadPages();
     });
 
+    // A page-selection tool's "pages" text field is moved out of Options and into
+    // the Pages card: typing page numbers and clicking previews are two ways to do
+    // the SAME thing, so they belong side by side. Options then holds only the
+    // options that actually change the operation (e.g. the rotation angle).
+    var mainOpts = tool.options || [], pagesDef = null;
+    if (tool.pageMode) {
+      mainOpts = mainOpts.filter(function (d) {
+        if (d.name !== "pages") return true;
+        pagesDef = d;
+        return false;
+      });
+    }
+
     // Options card
     var optCard = null, optForm = null;
-    if (tool.options && tool.options.length) {
+    if (mainOpts.length) {
       optCard = document.createElement("div");
       optCard.className = "card";
-      optCard.innerHTML = "<h3>2. Options</h3>";
+      optCard.innerHTML = "<h3>Options</h3>";
       optForm = document.createElement("div");
-      tool.options.forEach(function (d) { optForm.appendChild(fieldEl(d)); });
-      optForm.addEventListener("input", function () { applyVisibility(optForm, tool.options); updateRunState(); });
-      optForm.addEventListener("change", function () { applyVisibility(optForm, tool.options); });
-      applyVisibility(optForm, tool.options);
+      mainOpts.forEach(function (d) { optForm.appendChild(fieldEl(d)); });
+      optForm.addEventListener("input", function () { applyVisibility(optForm, mainOpts); updateRunState(); });
+      optForm.addEventListener("change", function () { applyVisibility(optForm, mainOpts); });
+      applyVisibility(optForm, mainOpts);
       optCard.appendChild(optForm);
       host.appendChild(optCard);
     }
 
-    // Custom panels (edit entries / fill-sign / watermark image / ocr detect)
-    if (tool.custom) host.appendChild(renderCustomPanel(tool, ws, function () { updateRunState(); }));
-
-    // Preview / page-selection card
-    var previewCard = null, previewBody = null;
+    // Preview / page-selection card. In "place" mode it comes BEFORE the entry
+    // panel, because the flow is pick-the-spot-then-choose-what-goes-there.
+    var previewCard = null, previewBody = null, pageForm = null;
     if (tool.pageMode) {
       previewCard = document.createElement("div");
       previewCard.className = "card";
       previewCard.innerHTML =
-        "<h3>" + (tool.options.length ? "3" : "2") + ". Pages</h3>" +
+        "<h3>Pages</h3>" +
         '<div class="hint-bar"></div>' +
-        '<button class="btn btn-sm load-pages">🖼️ Load page thumbnails</button>' +
+        '<div class="page-form"></div>' +
+        '<button class="btn btn-sm load-pages">🖼️ Load page previews</button>' +
         '<div class="preview-body" style="margin-top:12px"></div>';
       previewCard.querySelector(".hint-bar").textContent = tool.pageHint || "";
       previewBody = previewCard.querySelector(".preview-body");
       previewCard.querySelector(".load-pages").onclick = loadPages;
+      // Lives outside .preview-body so loading previews never wipes what was typed.
+      if (pagesDef) {
+        pageForm = previewCard.querySelector(".page-form");
+        pageForm.appendChild(fieldEl(pagesDef));
+        pageForm.addEventListener("input", function () { updateRunState(); });
+      }
       host.appendChild(previewCard);
+    }
+
+    // Custom panels (edit entries / fill-sign / watermark image / ocr detect)
+    if (tool.custom) {
+      host.appendChild(renderCustomPanel(tool, ws, function () {
+        updateRunState();
+        refreshMarks();
+      }));
+    }
+
+    // Redraw the page markers from the current entry list.
+    function refreshMarks() {
+      if (!previewBody || tool.pageMode !== "place" || !ws.thumbs.length) return;
+      ws.selection.marks = marksFromEntries(ws);
+      UI.renderThumbnails(previewBody, ws.thumbs, "place", ws.selection);
+    }
+
+    // Options + the relocated "pages" field, read back as one object.
+    function readOpts() {
+      var o = optForm ? readAll(optForm, mainOpts) : {};
+      if (pagesDef && pageForm) o.pages = readField(pageForm, pagesDef);
+      return o;
     }
 
     function refreshPreview() { if (previewBody) previewBody.innerHTML = ""; }
@@ -581,8 +750,15 @@
         prog.remove();
         ws.thumbs = res.thumbnails || [];
         if (!ws.thumbs.length) { previewBody.innerHTML = '<div class="empty">No previewable pages (is this a PDF?).</div>'; return; }
+        // NB this REPLACES ws.selection, so the place-mode wiring has to be
+        // re-attached here — the entry panel's marks/pending would be lost.
         ws.selection = freshSelection();
         ws.selection._onDraw = function () { updateRunState(); };
+        ws.selection._onPlace = function (p) {
+          if (ws._onPlace) ws._onPlace(p);   // let the entry panel show the spot
+          refreshMarks();                    // redraw so only one pending marker shows
+        };
+        ws.selection.marks = marksFromEntries(ws);
         UI.renderThumbnails(previewBody, ws.thumbs, tool.pageMode, ws.selection);
         updateRunState();
       }).catch(function (e) { prog.remove(); UI.toast(e.message, "err"); previewBody.innerHTML = ""; });
@@ -611,7 +787,7 @@
     }
 
     if (runBtn) runBtn.onclick = function () {
-      var opts = optForm ? readAll(optForm, tool.options) : {};
+      var opts = readOpts();
       if (!ws.files.length) { UI.toast("Add a file first.", "warn"); return; }
       var err = tool.validate ? tool.validate(ws, opts) : null;
       if (err) { UI.toast(err, "warn"); return; }
@@ -660,6 +836,21 @@
       warn.style.cssText = "margin:14px 0 4px;border-left:3px solid var(--warn,#e0a800);padding:8px 10px";
       warn.innerHTML = "⚠ " + String(res.warning);
       area.appendChild(warn);
+    }
+
+    // Compress-to-a-size: say what was actually achieved (the warning above already
+    // covers the miss case, so only report a target that was met).
+    var c = res.compression;
+    if (c && c.met) {
+      var note = document.createElement("div");
+      note.className = "hint-bar";
+      note.style.cssText = "margin:14px 0 4px";
+      note.textContent = "✔ Target met: " + API.humanSize(c.original_bytes) + " → " +
+        API.humanSize(c.achieved_bytes) + " (asked for " + API.humanSize(c.target_bytes) + "). " +
+        (c.lossless
+          ? "No image quality was lost — the target was reached by repacking alone."
+          : "Images re-encoded at " + c.dpi + " DPI, quality " + c.quality + ".");
+      area.appendChild(note);
     }
 
     var header = document.createElement("div");
@@ -813,12 +1004,49 @@
     var btnRow = card.querySelector(".entry-buttons");
     var listEl = card.querySelector(".entry-list");
 
+    // Place mode: a bar telling the user where the next item will land, fed by
+    // clicks on the page previews above.
+    var placeBar = null;
+    if (tool.pageMode === "place") {
+      placeBar = document.createElement("div");
+      placeBar.className = "hint-bar";
+      card.insertBefore(placeBar, btnRow);
+      ws._onPlace = paintPlaceBar;
+      paintPlaceBar();
+    }
+    function paintPlaceBar() {
+      if (!placeBar) return;
+      var p = ws.selection.pending;
+      if (!p) {
+        placeBar.textContent = "Click the spot on a page preview above where this should go " +
+          "(or drag a rectangle for an image / erase area), then choose ＋ below.";
+        return;
+      }
+      placeBar.textContent = "📍 Page " + p.page + " — " + Math.round(p.x * 100) +
+        "% across, " + Math.round(p.y * 100) + "% down" +
+        (p.box ? " (rectangle drawn)" : "") + ". Now choose ＋ below.";
+    }
+
     var specs = isEdit ? EDIT_SPECS : FILL_SPECS;
     Object.keys(specs).forEach(function (key) {
       var b = document.createElement("button");
       b.className = "btn btn-sm";
       b.textContent = "＋ " + specs[key].label;
-      b.onclick = function () { openEntryModal(specs[key], key, function (entry) { ws.entries.push(entry); paintEntries(); onChange(); }); };
+      b.onclick = function () {
+        // Once previews exist, a spot must be picked — that's the whole point.
+        // Without them (no file yet / unpreviewable) fall back to typed defaults.
+        if (placeBar && ws.thumbs.length && !ws.selection.pending) {
+          UI.toast("Click the spot on a page preview first.", "warn");
+          return;
+        }
+        openEntryModal(specs[key], key, function (entry) {
+          ws.entries.push(entry);
+          ws.selection.pending = null;
+          paintPlaceBar();
+          paintEntries();
+          onChange();
+        }, placementFor(specs[key], ws.selection.pending));
+      };
       btnRow.appendChild(b);
     });
 
@@ -831,7 +1059,8 @@
         row.innerHTML = '<span class="grow"><div class="ri-name"></div><div class="ri-size"></div></span>' +
           '<button class="btn btn-sm fi-remove-btn">Remove</button>';
         row.querySelector(".ri-name").textContent = entrySummary(en);
-        row.querySelector(".ri-size").textContent = "page " + en.page;
+        row.querySelector(".ri-size").textContent =
+          (en.pages != null ? "page(s) " + en.pages : "page " + en.page);
         row.querySelector(".fi-remove-btn").onclick = function () { ws.entries.splice(i, 1); paintEntries(); onChange(); };
         listEl.appendChild(row);
       });
@@ -852,7 +1081,7 @@
     add_text: {
       label: "Text", type: "add_text",
       fields: [
-        numF("page", "Page", 1), numF("x", "X (0..1)", 0.1, 0, 1, 0.01), numF("y", "Y (0..1)", 0.1, 0, 1, 0.01),
+        pagesF(), numF("x", "X — across (0 = left, 1 = right)", 0.1, 0, 1, 0.01), numF("y", "Y — down (0 = top, 1 = bottom)", 0.1, 0, 1, 0.01),
         { name: "text", label: "Text", type: "text", default: "" },
         numF("font_size", "Font size", 14), { name: "color", label: "Color", type: "color", default: "#000000" },
         { name: "bold", label: "Bold", type: "checkbox", default: false }, { name: "italic", label: "Italic", type: "checkbox", default: false },
@@ -860,30 +1089,40 @@
     },
     delete_region: {
       label: "Erase region", type: "delete_region",
-      fields: [numF("page", "Page", 1), numF("x0", "X0", 0.1, 0, 1, 0.01), numF("y0", "Y0", 0.1, 0, 1, 0.01), numF("x1", "X1", 0.5, 0, 1, 0.01), numF("y1", "Y1", 0.2, 0, 1, 0.01)],
+      fields: [pagesF(), numF("x0", "Left edge (0..1)", 0.1, 0, 1, 0.01), numF("y0", "Top edge (0..1)", 0.1, 0, 1, 0.01), numF("x1", "Right edge (0..1)", 0.5, 0, 1, 0.01), numF("y1", "Bottom edge (0..1)", 0.2, 0, 1, 0.01)],
     },
     add_image: {
       label: "Image", type: "add_image", image: true,
-      fields: [numF("page", "Page", 1), numF("x0", "X0", 0.1, 0, 1, 0.01), numF("y0", "Y0", 0.1, 0, 1, 0.01), numF("x1", "X1", 0.5, 0, 1, 0.01), numF("y1", "Y1", 0.4, 0, 1, 0.01)],
+      fields: [pagesF(), numF("x0", "Left edge (0..1)", 0.1, 0, 1, 0.01), numF("y0", "Top edge (0..1)", 0.1, 0, 1, 0.01), numF("x1", "Right edge (0..1)", 0.5, 0, 1, 0.01), numF("y1", "Bottom edge (0..1)", 0.4, 0, 1, 0.01)],
     },
   };
   /* Entry field specs for the Fill & Sign tool */
   var FILL_SPECS = {
-    text: { label: "Text", type: "text", fields: [numF("page", "Page", 1), numF("x", "X (0..1)", 0.1, 0, 1, 0.01), numF("y", "Y (0..1)", 0.1, 0, 1, 0.01), { name: "text", label: "Text", type: "text", default: "" }, numF("font_size", "Font size", 12)] },
-    date: { label: "Date", type: "date", fields: [numF("page", "Page", 1), numF("x", "X (0..1)", 0.1, 0, 1, 0.01), numF("y", "Y (0..1)", 0.1, 0, 1, 0.01), { name: "text", label: "Date text", type: "text", default: "" }] },
-    checkbox: { label: "Checkbox", type: "checkbox", fields: [numF("page", "Page", 1), numF("x", "X (0..1)", 0.1, 0, 1, 0.01), numF("y", "Y (0..1)", 0.1, 0, 1, 0.01), { name: "checked", label: "Checked", type: "checkbox", default: true }] },
-    signature_text: { label: "Signature (text)", type: "signature_text", fields: [numF("page", "Page", 1), numF("x", "X (0..1)", 0.1, 0, 1, 0.01), numF("y", "Y (0..1)", 0.1, 0, 1, 0.01), { name: "text", label: "Signature", type: "text", default: "" }, numF("font_size", "Font size", 22)] },
-    signature_image: { label: "Signature (image)", type: "signature_image", image: true, fields: [numF("page", "Page", 1), numF("x0", "X0", 0.1, 0, 1, 0.01), numF("y0", "Y0", 0.7, 0, 1, 0.01), numF("x1", "X1", 0.4, 0, 1, 0.01), numF("y1", "Y1", 0.85, 0, 1, 0.01)] },
+    text: { label: "Text", type: "text", fields: [pagesF(), numF("x", "X — across (0 = left, 1 = right)", 0.1, 0, 1, 0.01), numF("y", "Y — down (0 = top, 1 = bottom)", 0.1, 0, 1, 0.01), { name: "text", label: "Text", type: "text", default: "" }, numF("font_size", "Font size", 12)] },
+    date: { label: "Date", type: "date", fields: [pagesF(), numF("x", "X — across (0 = left, 1 = right)", 0.1, 0, 1, 0.01), numF("y", "Y — down (0 = top, 1 = bottom)", 0.1, 0, 1, 0.01), { name: "text", label: "Date text", type: "text", default: "" }] },
+    checkbox: { label: "Checkbox", type: "checkbox", fields: [pagesF(), numF("x", "X — across (0 = left, 1 = right)", 0.1, 0, 1, 0.01), numF("y", "Y — down (0 = top, 1 = bottom)", 0.1, 0, 1, 0.01), { name: "checked", label: "Checked", type: "checkbox", default: true }] },
+    signature_text: { label: "Signature (text)", type: "signature_text", fields: [pagesF(), numF("x", "X — across (0 = left, 1 = right)", 0.1, 0, 1, 0.01), numF("y", "Y — down (0 = top, 1 = bottom)", 0.1, 0, 1, 0.01), { name: "text", label: "Signature", type: "text", default: "" }, numF("font_size", "Font size", 22)] },
+    signature_image: { label: "Signature (image)", type: "signature_image", image: true, fields: [pagesF(), numF("x0", "Left edge (0..1)", 0.1, 0, 1, 0.01), numF("y0", "Top edge (0..1)", 0.7, 0, 1, 0.01), numF("x1", "Right edge (0..1)", 0.4, 0, 1, 0.01), numF("y1", "Bottom edge (0..1)", 0.85, 0, 1, 0.01)] },
   };
   function numF(name, label, def, min, max, step) {
     var f = { name: name, label: label, type: "number", default: def };
     if (min != null) f.min = min; if (max != null) f.max = max; if (step != null) f.step = step;
     return f;
   }
+  // "Apply to page(s)" — pre-filled with the clicked page; accepts "all" or a
+  // list like 1,3,5-8 to repeat the same item on several pages at the same spot.
+  function pagesF() {
+    return { name: "pages", label: "Apply to page(s)", type: "text", default: "1",
+      hint: "Defaults to the page you clicked. Type “all”, or a list like 1,3,5-8, to place this same item on every one of those pages." };
+  }
 
-  function openEntryModal(spec, typeKey, onAdd) {
+  // `prefill` carries the page/coords picked on the preview; the fields stay
+  // editable so the position can still be nudged by hand.
+  function openEntryModal(spec, typeKey, onAdd, prefill) {
     var form = document.createElement("div");
-    spec.fields.forEach(function (d) { form.appendChild(fieldEl(d)); });
+    spec.fields.forEach(function (d) {
+      form.appendChild(fieldEl(d, prefill && prefill[d.name] != null ? prefill[d.name] : undefined));
+    });
     var fileInput = null;
     if (spec.image) {
       var fwrap = document.createElement("div");
@@ -973,7 +1212,7 @@
     // Upload (mixed types allowed; backend filters per op)
     var upCard = document.createElement("div");
     upCard.className = "card";
-    upCard.innerHTML = "<h3>1. Upload files</h3>" +
+    upCard.innerHTML = "<h3>Upload files</h3>" +
       '<div class="dropzone"><div class="dz-icon">⬆️</div><div class="dz-main">Drag & drop files</div>' +
       '<div class="dz-hint">or click to browse</div></div>' +
       '<input type="file" class="hidden" multiple>' +
@@ -1003,7 +1242,7 @@
     // Operation + options
     var opCard = document.createElement("div");
     opCard.className = "card";
-    opCard.innerHTML = "<h3>2. Operation</h3>";
+    opCard.innerHTML = "<h3>Operation</h3>";
     var opForm = document.createElement("div");
     opForm.appendChild(fieldEl({ name: "operation", label: "Operation", type: "select", choices: BATCH_OPS, default: "compress" }));
     var opOptsHost = document.createElement("div");

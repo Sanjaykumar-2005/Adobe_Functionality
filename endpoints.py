@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from flask import abort, current_app, render_template, request, send_from_directory
 
@@ -100,6 +101,43 @@ def _as_bool(value, default: bool = True) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+_SIZE_UNITS = {"b": 1, "kb": 1024, "k": 1024, "mb": 1024 ** 2, "m": 1024 ** 2}
+
+
+def _parse_size(raw, unit=None) -> int | None:
+    """Parse a file size -> bytes. ``None`` when *raw* is absent/blank.
+
+    Accepts a bare number plus a separate *unit* ("2", "MB") or a combined
+    string ("2 MB", "500kb"). A unit inside *raw* wins over the *unit* arg;
+    MB is assumed when neither says.
+    """
+    if raw is None or not str(raw).strip():
+        return None
+    text = str(raw).strip().lower().replace(" ", "")
+    match = re.fullmatch(r"(\d*\.?\d+)([a-z]*)", text)
+    if not match:
+        raise ValueError("Target size must be a number, e.g. 2 or 500.")
+    value = float(match.group(1))
+    suffix = match.group(2) or (unit or "mb").strip().lower()
+    if suffix not in _SIZE_UNITS:
+        raise ValueError("Target size unit must be KB or MB.")
+    if value <= 0:
+        raise ValueError("Target size must be greater than zero.")
+    return int(value * _SIZE_UNITS[suffix])
+
+
+def _human_size(num: int | None) -> str:
+    """Bytes -> a short human string ('1.4 MB'). Mirrors the frontend's format."""
+    if not num:
+        return "0 B"
+    size = float(num)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
 
 
 def _collect_image_map(job_id: str) -> dict:
@@ -232,7 +270,10 @@ def convert_image_to_pdf():
 def convert_pdf_to_word():
     """Convert one or more TEXT-BASED PDFs to editable Word (.docx), no OCR.
 
-    Fidelity strategy (best first):
+    The engine is chosen automatically per file by ``recommend_mode``: table-heavy
+    or white-text-on-dark documents go to the native ``pdf2word`` engine (the office
+    import mangles tables and hides that text); everything else takes the faithful
+    office path, best first:
       1. LibreOffice's Writer PDF import — the PRIMARY engine. Runs on the server
          (Linux/Docker) with no MS Word: preserves backgrounds, page borders, shaded
          headers, images and complex layout. Its text sits in positioned frames, so
@@ -247,14 +288,6 @@ def convert_pdf_to_word():
     try:
         job_id = new_job_id()
         paths = save_uploads(request.files.getlist("files"), Config.ALLOWED_PDF, job_id)
-        remove_borders = _as_bool(request.form.get("remove_borders"), False)
-        # Mode: "auto" (default) inspects each PDF and routes table-heavy or
-        # white-text-on-dark documents to the native engine (faithful office import
-        # loses those), everything else to the faithful office path. "faithful" =
-        # LibreOffice/Word (preserves visual layout, text in frames). "editable" =
-        # the native engine (flowing paragraphs, real tables, nothing hidden).
-        requested = (request.form.get("mode") or "auto").strip().lower()
-        auto = requested in ("", "auto")
 
         # Reject scanned / image-only PDFs before any engine runs.
         for src in paths:
@@ -262,46 +295,27 @@ def convert_pdf_to_word():
             if not ok_txt:
                 return fail(reason, 400)
 
-        have_soffice = conversion_service.soffice_available()
-
-        # The MS-Word path dismisses Word's "convert PDF" dialog with keystrokes, so
-        # it breaks if the user already has Word focused. That only matters when it
-        # is actually going to run — explicit faithful mode with no LibreOffice. (In
-        # auto mode the faithful path only runs when soffice IS present, so it can't
-        # hit the Word dialog.)
-        if requested == "faithful" and not have_soffice and conversion_service.word_is_running():
-            return fail(
-                "Microsoft Word is currently open. Please close ALL Word windows and "
-                "try again — this gives a faithful conversion that preserves the "
-                "background, borders and formatting. (While Word is open the app would "
-                "fall back to a lower-fidelity result.) Tip: choose the 'Editable text' "
-                "mode to convert without Word.",
-                409,
-            )
-
         outputs, engines, used_native = [], [], False
         for src in paths:
             dest = output_path(job_id, with_suffix(src, "", ".docx"))
 
-            # Auto: let the analyzer pick per file (table-heavy / white-on-dark ->
-            # editable; otherwise faithful).
-            mode = pdf_to_word_service.recommend_mode(src) if auto else requested
+            # Let the analyzer pick per file (table-heavy / white-on-dark ->
+            # native engine; otherwise the faithful office path).
+            mode = pdf_to_word_service.recommend_mode(src)
 
-            # Editable mode: go straight to the native engine (every text span read
-            # into real paragraphs — nothing hidden in overlapping frames).
+            # Native engine: every text span read into real paragraphs — nothing
+            # hidden in overlapping frames. Continuous flow (no forced break per PDF
+            # page) so no blank/half-empty pages are manufactured.
             if mode == "editable":
-                # Auto drives clean continuous flow (no forced break per PDF page,
-                # so no manufactured blank/half-empty pages). Explicit "editable"
-                # keeps the strict 1-PDF-page = 1-Word-page mapping.
                 result = pdf_to_word_service.convert_pdf_to_word(
-                    src, dest, remove_borders=remove_borders, page_breaks=not auto)
+                    src, dest, page_breaks=False)
                 if not result.get("success"):
                     return fail(result.get("error") or "Conversion failed.", 400)
                 outputs.append(result["output_path"])
                 engines.append("native")
                 continue
 
-            # Faithful mode ---------------------------------------------------
+            # Faithful office path --------------------------------------------
             # 1) LibreOffice (server default).
             produced = conversion_service._pdf_to_word_libreoffice(src, dest)
             engine = "libreoffice"
@@ -312,15 +326,13 @@ def convert_pdf_to_word():
                 engine = "word"
 
             if produced:
-                if remove_borders:
-                    conversion_service._strip_docx_table_borders(produced)
                 outputs.append(produced)
                 engines.append(engine)
                 continue
 
             # 3) Portable native rule-based engine.
             result = pdf_to_word_service.convert_pdf_to_word(
-                src, dest, remove_borders=remove_borders, page_breaks=not auto)
+                src, dest, page_breaks=False)
             if not result.get("success"):
                 return fail(result.get("error") or "Conversion failed.", 400)
             outputs.append(result["output_path"])
@@ -465,24 +477,32 @@ def organize_delete():
 
 
 def organize_crop():
-    """Crop pages to a normalized box (JSON body or form)."""
+    """Crop pages to normalized boxes (JSON body or form).
+
+    `boxes` = per-page `[{page,x0,y0,x1,y1}]` — each page cropped to its own box,
+    pages not listed left alone. This is what the UI sends. `box` (+ optional
+    `pages`) = the original "one box on every chosen page" form, still accepted.
+    """
     try:
         job_id = new_job_id()
         path = _single_pdf(job_id)
         data = request.get_json(silent=True)
         if data:
+            boxes = data.get("boxes")
             box = data.get("box")
             pages = data.get("pages")
             if isinstance(pages, str):
                 pages = parse_page_list(pages)
         else:
+            boxes_raw = request.form.get("boxes")
+            boxes = json.loads(boxes_raw) if boxes_raw else None
             box_raw = request.form.get("box")
-            if not box_raw:
-                raise ValueError("`box` is required.")
-            box = json.loads(box_raw)
+            box = json.loads(box_raw) if box_raw else None
             pages_spec = request.form.get("pages")
             pages = parse_page_list(pages_spec) if pages_spec else None
-        outputs = pdf_service.crop(path, job_id, box, pages=pages)
+        if not boxes and not box:
+            raise ValueError("`boxes` (one per page) or `box` is required.")
+        outputs = pdf_service.crop(path, job_id, box, pages=pages, boxes=boxes)
         files = [file_descriptor(job_id, p) for p in outputs]
         return ok(job_id, files)
     except (FileValidationError, ValueError) as e:
@@ -493,14 +513,34 @@ def organize_crop():
 
 
 def organize_compress():
-    """Compress a PDF at the requested quality level."""
+    """Compress a PDF — at a quality `level`, or down to a `target_size`.
+
+    `target_size` (+ optional `target_unit`, default MB) switches to target mode
+    and ignores `level`. Targets are best-effort: the envelope carries a
+    `compression` report and a `warning` when the target could not be reached.
+    """
     try:
         job_id = new_job_id()
         path = _single_pdf(job_id)
         level = request.form.get("level", "medium")
-        outputs = pdf_service.compress(path, job_id, level)
+        target_bytes = _parse_size(request.form.get("target_size"),
+                                   request.form.get("target_unit"))
+        report: dict | None = {} if target_bytes else None
+        outputs = pdf_service.compress(path, job_id, level,
+                                       target_bytes=target_bytes, report=report)
         files = [file_descriptor(job_id, p) for p in outputs]
-        return ok(job_id, files)
+        extra: dict = {}
+        if report:
+            extra["compression"] = report
+            if not report["met"]:
+                extra["warning"] = (
+                    f"Could not reach {_human_size(report['target_bytes'])}. "
+                    f"Squeezed {_human_size(report['original_bytes'])} down to "
+                    f"{_human_size(report['achieved_bytes'])}, which is as small as "
+                    "this PDF gets — only images can be re-encoded, so text, fonts "
+                    "and page structure set a floor. Try a larger target."
+                )
+        return ok(job_id, files, **extra)
     except (FileValidationError, ValueError) as e:
         return fail(str(e), 400)
     except Exception as e:  # noqa: BLE001
